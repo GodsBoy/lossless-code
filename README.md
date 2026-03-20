@@ -311,7 +311,13 @@ lossless-code supports multiple LLM providers for compactions. Configure your pr
 
 **Anthropic** (default)
 
-Set `ANTHROPIC_API_KEY` in your environment.
+Authentication is resolved automatically from multiple sources (in priority order):
+
+1. `ANTHROPIC_API_KEY` environment variable (standard API key)
+2. Claude Code OAuth token from `~/.claude/.credentials.json` (setup-token)
+3. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+
+> **Note:** OAuth/setup-tokens require `ANTHROPIC_BASE_URL` pointing to a compatible proxy (e.g. OpenClaw), since `api.anthropic.com` does not accept OAuth tokens directly. If you only have a setup-token and no proxy, use the OpenAI provider instead.
 
 ```json
 { "summaryProvider": "anthropic", "summaryModel": "claude-haiku-4-5-20251001" }
