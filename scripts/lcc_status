@@ -1,0 +1,4 @@
+#!/bin/bash
+# lcc_status — show vault statistics
+SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+exec python3 "$SCRIPTS_DIR/lcc.py" status "$@"

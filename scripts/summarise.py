@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""
+DAG summarisation engine for lossless-code.
+
+Collects unsummarised messages, chunks them, calls the summary model,
+writes summary nodes to the DAG, and cascades to higher depths when
+the node count at any depth exceeds the configured threshold.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import json
+
+# Ensure scripts/ is importable
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import db
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return max(1, len(text) // 4)
+
+
+def call_summary_model(text: str, cfg: dict) -> str:
+    """
+    Call Claude via the Anthropic CLI / API to produce a summary.
+
+    Falls back to a simple extractive summary if the API is unavailable.
+    """
+    model = cfg.get("summaryModel", "claude-haiku-4-5-20251001")
+
+    prompt = (
+        "Summarise the following conversation turns concisely, preserving all "
+        "key decisions, facts, file paths, commands, and outputs. Do not omit "
+        "anything actionable. Output ONLY the summary, no preamble.\n\n"
+        f"{text}"
+    )
+
+    # Try Anthropic Python SDK first
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+    except Exception:
+        pass
+
+    # Fallback: extractive summary (take first line of each turn)
+    lines = text.strip().split("\n")
+    kept = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and (
+            stripped.startswith("user:")
+            or stripped.startswith("assistant:")
+            or stripped.startswith("[")
+            or "decision" in stripped.lower()
+            or "created" in stripped.lower()
+            or "error" in stripped.lower()
+            or "fixed" in stripped.lower()
+        ):
+            kept.append(stripped)
+    if not kept:
+        # Just take first and last few lines
+        kept = lines[:5] + (["..."] if len(lines) > 10 else []) + lines[-5:]
+    return "\n".join(kept)
+
+
+def format_messages_for_summary(messages: list[dict]) -> str:
+    """Format a chunk of messages into a text block for summarisation."""
+    parts = []
+    for m in messages:
+        role = m["role"]
+        content = m["content"]
+        # Truncate very long messages to avoid blowing up the summary prompt
+        if len(content) > 4000:
+            content = content[:3800] + "\n... [truncated]"
+        prefix = f"[{role}]"
+        if m.get("tool_name"):
+            prefix = f"[{role}:{m['tool_name']}]"
+        parts.append(f"{prefix} {content}")
+    return "\n\n".join(parts)
+
+
+def summarise_messages(session_id: str = None) -> int:
+    """
+    Run depth-0 summarisation on unsummarised messages.
+    Returns the number of summary nodes created.
+    """
+    cfg = db.load_config()
+    chunk_size = cfg.get("chunkSize", 20)
+
+    messages = db.get_unsummarised(session_id)
+    if not messages:
+        return 0
+
+    created = 0
+    # Chunk messages
+    for i in range(0, len(messages), chunk_size):
+        chunk = messages[i : i + chunk_size]
+        text = format_messages_for_summary(chunk)
+        summary_text = call_summary_model(text, cfg)
+
+        summary_id = db.gen_summary_id()
+        source_ids = [("message", str(m["id"])) for m in chunk]
+        token_count = estimate_tokens(summary_text)
+
+        # Determine session_id — use chunk's if all same session
+        chunk_sessions = set(m["session_id"] for m in chunk)
+        sid = chunk_sessions.pop() if len(chunk_sessions) == 1 else None
+
+        db.store_summary(
+            summary_id=summary_id,
+            content=summary_text,
+            depth=0,
+            source_ids=source_ids,
+            session_id=sid,
+            token_count=token_count,
+        )
+        db.mark_summarised([m["id"] for m in chunk])
+        created += 1
+
+    return created
+
+
+def cascade_summaries(session_id: str = None) -> int:
+    """
+    If summaries at any depth exceed the threshold, summarise them into
+    the next depth level. Cascades until under threshold or max depth.
+    """
+    cfg = db.load_config()
+    threshold = cfg.get("depthThreshold", 10)
+    max_depth = cfg.get("incrementalMaxDepth", -1)
+
+    total_created = 0
+    depth = 0
+
+    while True:
+        if max_depth >= 0 and depth >= max_depth:
+            break
+
+        summaries = db.get_summaries_at_depth(depth, session_id)
+        if len(summaries) <= threshold:
+            break
+
+        chunk_size = cfg.get("chunkSize", 20)
+        created = 0
+
+        for i in range(0, len(summaries), chunk_size):
+            chunk = summaries[i : i + chunk_size]
+            text = "\n\n---\n\n".join(s["content"] for s in chunk)
+            summary_text = call_summary_model(text, cfg)
+
+            summary_id = db.gen_summary_id()
+            source_ids = [("summary", s["id"]) for s in chunk]
+            token_count = estimate_tokens(summary_text)
+
+            chunk_sessions = set(s["session_id"] for s in chunk if s["session_id"])
+            sid = chunk_sessions.pop() if len(chunk_sessions) == 1 else None
+
+            db.store_summary(
+                summary_id=summary_id,
+                content=summary_text,
+                depth=depth + 1,
+                source_ids=source_ids,
+                session_id=sid,
+                token_count=token_count,
+            )
+            created += 1
+
+        total_created += created
+        depth += 1
+
+    return total_created
+
+
+def run_full_summarisation(session_id: str = None) -> dict:
+    """Run both message summarisation and depth cascading."""
+    depth0 = summarise_messages(session_id)
+    cascaded = cascade_summaries(session_id)
+    return {"depth_0_created": depth0, "cascaded_created": cascaded}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run DAG summarisation")
+    parser.add_argument("--session", help="Session ID to summarise (default: all)")
+    args = parser.parse_args()
+
+    result = run_full_summarisation(args.session)
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

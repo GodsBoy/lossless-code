@@ -1,0 +1,4 @@
+#!/bin/bash
+# lcc_grep — full-text search across all messages and summaries
+SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+exec python3 "$SCRIPTS_DIR/lcc.py" grep "$@"

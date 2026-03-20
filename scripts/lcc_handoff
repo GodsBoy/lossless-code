@@ -1,0 +1,4 @@
+#!/bin/bash
+# lcc_handoff — show/generate handoff for current session
+SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+exec python3 "$SCRIPTS_DIR/lcc.py" handoff "$@"

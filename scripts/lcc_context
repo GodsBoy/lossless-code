@@ -1,0 +1,4 @@
+#!/bin/bash
+# lcc_context — surface top N relevant DAG nodes for a query
+SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+exec python3 "$SCRIPTS_DIR/lcc.py" context "$@"
