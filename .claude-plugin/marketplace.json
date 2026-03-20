@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lossless-code",
+  "description": "DAG-based lossless context management for Claude Code",
+  "owner": {
+    "name": "GodsBoy",
+    "email": "dhuysamen@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "lossless-code",
+      "description": "DAG-based lossless context management. Every message persisted in SQLite with FTS5 search. Summaries form a directed acyclic graph - nothing is ever lost.",
+      "source": ".",
+      "category": "development",
+      "homepage": "https://github.com/GodsBoy/lossless-code"
+    }
+  ]
+}

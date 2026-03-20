@@ -1,0 +1,12 @@
+{
+  "name": "lossless-code",
+  "description": "DAG-based lossless context management for Claude Code. Every message from every session is persisted in a SQLite vault with FTS5 search. Summaries form a directed acyclic graph - nothing is ever lost.",
+  "version": "1.0.0",
+  "author": {
+    "name": "GodsBoy",
+    "email": "dhuysamen@gmail.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/GodsBoy/lossless-code",
+  "repository": "https://github.com/GodsBoy/lossless-code"
+}

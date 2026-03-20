@@ -18,9 +18,12 @@ from typing import Optional
 # Paths
 # ---------------------------------------------------------------------------
 
+# LOSSLESS_HOME: where scripts/hooks live (may be plugin cache dir)
+# LOSSLESS_VAULT_DIR: where vault.db persists (always ~/.lossless-code)
 LOSSLESS_HOME = Path(os.environ.get("LOSSLESS_HOME", Path.home() / ".lossless-code"))
-VAULT_DB = LOSSLESS_HOME / "vault.db"
-CONFIG_PATH = LOSSLESS_HOME / "config.json"
+VAULT_DIR = Path(os.environ.get("LOSSLESS_VAULT_DIR", Path.home() / ".lossless-code"))
+VAULT_DB = VAULT_DIR / "vault.db"
+CONFIG_PATH = VAULT_DIR / "config.json"
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -126,7 +129,7 @@ def get_db() -> sqlite3.Connection:
     if _conn is not None:
         return _conn
 
-    LOSSLESS_HOME.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
     _conn = sqlite3.connect(str(VAULT_DB), timeout=10)
     _conn.row_factory = sqlite3.Row
     _conn.execute("PRAGMA journal_mode=WAL")
@@ -168,7 +171,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    LOSSLESS_HOME.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
 
