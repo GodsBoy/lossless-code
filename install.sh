@@ -217,7 +217,7 @@ else
     echo "  [warn] No settings.json found at $SETTINGS_FILE — create it manually or run 'claude' first"
 fi
 
-# ── 9. Install MCP SDK ─────────────────────────────────────────────────
+# ── 9. Install Python dependencies ────────────────────────────────────
 
 if python3 -c "import mcp" 2>/dev/null; then
     echo "  [skip] MCP SDK already installed"
@@ -226,6 +226,15 @@ else
     pip install --break-system-packages mcp 2>/dev/null || \
     pip install mcp 2>/dev/null || \
     echo "  [warn] Could not install mcp — install manually: pip install mcp"
+fi
+
+if python3 -c "import textual" 2>/dev/null; then
+    echo "  [skip] textual already installed"
+else
+    echo "  [info] Installing textual (TUI framework)..."
+    pip install --break-system-packages textual 2>/dev/null || \
+    pip install textual 2>/dev/null || \
+    echo "  [warn] Could not install textual — install manually: pip install textual"
 fi
 
 # ── 10. Register MCP server in ~/.claude.json ──────────────────────────
@@ -268,7 +277,17 @@ mkdir -p "$SKILL_DIR"
 cp "$SCRIPT_DIR/skills/lossless-code/SKILL.md" "$SKILL_DIR/SKILL.md"
 echo "  [ok] Installed skill to $SKILL_DIR"
 
-# ── 12. Verify ──────────────────────────────────────────────────────────
+# ── 12. Install TUI ─────────────────────────────────────────────────────
+
+mkdir -p "$LOSSLESS_HOME/tui"
+cp "$SCRIPT_DIR/tui/lcc_tui.py" "$LOSSLESS_HOME/tui/"
+cp "$SCRIPT_DIR/tui/lcc-tui"   "$LOSSLESS_HOME/tui/"
+chmod +x "$LOSSLESS_HOME/tui/lcc-tui"
+ln -sf "$LOSSLESS_HOME/tui/lcc-tui" /usr/local/bin/lcc-tui 2>/dev/null || \
+ln -sf "$LOSSLESS_HOME/tui/lcc-tui" "$HOME/.local/bin/lcc-tui" 2>/dev/null || true
+echo "  [ok] Installed lcc-tui to PATH"
+
+# ── 13. Verify ──────────────────────────────────────────────────────────
 
 echo ""
 echo "Verifying installation..."
@@ -296,7 +315,7 @@ python3 "$LOSSLESS_HOME/scripts/lcc.py" status
 echo ""
 echo "lossless-code installed successfully!"
 echo ""
-echo "Commands available: lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status"
+echo "Commands available: lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc-tui"
 echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
 echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact"
 echo ""

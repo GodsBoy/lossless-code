@@ -18,7 +18,7 @@
 [![MCP](https://img.shields.io/badge/MCP-server-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/GodsBoy/lossless-code/pulls)
 
-[Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
+[Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [Terminal UI](#terminal-ui-lcc-tui) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
 
 </div>
 
@@ -208,6 +208,33 @@ Show vault statistics: message count, summary count, DAG depth, and FTS index he
 ```bash
 lcc_status
 ```
+
+## Terminal UI (lcc-tui)
+
+`lcc-tui` is a terminal-based browser for your vault. Built with [Textual](https://github.com/Textualize/textual).
+
+```bash
+lcc-tui
+```
+
+### Views
+
+| Tab | Key | Description |
+|-----|-----|-------------|
+| Sessions | `1` | Browse all sessions — select to view messages |
+| Search | `2` | Full-text search across messages and summaries |
+| Summaries | `3` | Browse DAG summaries by depth — select to expand |
+| Stats | `4` | Dashboard: sessions, messages, summaries, vault size |
+
+### Navigation
+
+- `1`–`4` — switch tabs
+- `/` — open search modal from any view
+- `Enter` — drill into selected session or summary
+- `Esc` — go back
+- `q` — quit
+
+<!-- Screenshot placeholder: run `lcc-tui` and capture with `textual screenshot` -->
 
 ## How It Works
 
