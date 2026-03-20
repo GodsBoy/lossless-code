@@ -194,10 +194,24 @@ for event, hook_list in lcc_hooks.items():
 
 settings["hooks"] = existing_hooks
 
+# ── 8b. Auto-approve MCP tool permissions ────────────────────────────
+# Without this, Claude Code prompts for permission on every MCP tool call.
+permissions = settings.get("permissions", {})
+allow = permissions.get("allow", [])
+# Single wildcard rule covers all lcc tools
+mcp_rule = "mcp__lossless-code__*"
+# Remove any old per-tool rules (from earlier installs)
+allow = [a for a in allow if not a.startswith("mcp__lossless-code__")]
+if mcp_rule not in allow:
+    allow.append(mcp_rule)
+permissions["allow"] = allow
+settings["permissions"] = permissions
+
 with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2)
 
 print("  [ok] Configured Claude Code hooks in settings.json")
+print("  [ok] Auto-approved MCP tool permissions")
 PYEOF
 else
     echo "  [warn] No settings.json found at $SETTINGS_FILE — create it manually or run 'claude' first"
