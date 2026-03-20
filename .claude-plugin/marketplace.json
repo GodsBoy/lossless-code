@@ -10,7 +10,7 @@
     {
       "name": "lossless-code",
       "description": "DAG-based lossless context management. Every message persisted in SQLite with FTS5 search. Summaries form a directed acyclic graph - nothing is ever lost.",
-      "source": ".",
+      "source": "./",
       "category": "development",
       "homepage": "https://github.com/GodsBoy/lossless-code"
     }
