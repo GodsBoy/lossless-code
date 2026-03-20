@@ -16,6 +16,7 @@ echo ""
 # ── 1. Create home directory ────────────────────────────────────────────
 
 mkdir -p "$LOSSLESS_HOME/scripts"
+mkdir -p "$LOSSLESS_HOME/mcp"
 echo "  [ok] Created $LOSSLESS_HOME"
 
 # ── 2. Copy scripts ────────────────────────────────────────────────────
@@ -28,6 +29,11 @@ cp "$SCRIPT_DIR/scripts/hook_stop.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_session_start.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_store_message.py" "$LOSSLESS_HOME/scripts/"
 echo "  [ok] Copied Python scripts to $LOSSLESS_HOME/scripts/"
+
+# ── 2b. Copy MCP server ──────────────────────────────────────────────────
+
+cp "$SCRIPT_DIR/mcp/server.py" "$LOSSLESS_HOME/mcp/server.py"
+echo "  [ok] Copied MCP server to $LOSSLESS_HOME/mcp/"
 
 # ── 3. Copy and chmod CLI wrappers ──────────────────────────────────────
 
@@ -197,14 +203,58 @@ else
     echo "  [warn] No settings.json found at $SETTINGS_FILE — create it manually or run 'claude' first"
 fi
 
-# ── 9. Install skill ────────────────────────────────────────────────────
+# ── 9. Install MCP SDK ─────────────────────────────────────────────────
+
+if python3 -c "import mcp" 2>/dev/null; then
+    echo "  [skip] MCP SDK already installed"
+else
+    echo "  [info] Installing MCP SDK..."
+    pip install --break-system-packages mcp 2>/dev/null || \
+    pip install mcp 2>/dev/null || \
+    echo "  [warn] Could not install mcp — install manually: pip install mcp"
+fi
+
+# ── 10. Register MCP server in ~/.claude.json ──────────────────────────
+
+CLAUDE_JSON="$HOME/.claude.json"
+python3 << 'MCPEOF'
+import json
+import os
+
+claude_json = os.path.expanduser("~/.claude.json")
+lossless_home = os.environ.get("LOSSLESS_HOME", os.path.expanduser("~/.lossless-code"))
+mcp_server_path = os.path.join(lossless_home, "mcp", "server.py")
+
+# Load existing config or create new
+if os.path.exists(claude_json):
+    with open(claude_json) as f:
+        config = json.load(f)
+else:
+    config = {}
+
+# Merge MCP server config (don't overwrite other servers)
+mcp_servers = config.get("mcpServers", {})
+mcp_servers["lossless-code"] = {
+    "command": "python3",
+    "args": [mcp_server_path],
+    "env": {}
+}
+config["mcpServers"] = mcp_servers
+
+with open(claude_json, "w") as f:
+    json.dump(config, f, indent=2)
+
+print(f"  [ok] Registered MCP server in {claude_json}")
+MCPEOF
+
+# ── 11. Install skill ────────────────────────────────────────────────────
 
 SKILL_DIR="$CLAUDE_DIR/skills/lossless-code"
 mkdir -p "$SKILL_DIR"
 cp "$SCRIPT_DIR/skills/lossless-code/SKILL.md" "$SKILL_DIR/SKILL.md"
 echo "  [ok] Installed skill to $SKILL_DIR"
 
-# ── 10. Verify ──────────────────────────────────────────────────────────
+# ── 12. Verify ──────────────────────────────────────────────────────────
 
 echo ""
 echo "Verifying installation..."
@@ -233,6 +283,7 @@ echo ""
 echo "lossless-code installed successfully!"
 echo ""
 echo "Commands available: lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status"
+echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
 echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact"
 echo ""
 echo "To uninstall, remove $LOSSLESS_HOME and the hooks from $SETTINGS_FILE"
