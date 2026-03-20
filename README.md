@@ -234,7 +234,7 @@ lcc-tui
 - `Esc` — go back
 - `q` — quit
 
-<!-- Screenshot placeholder: run `lcc-tui` and capture with `textual screenshot` -->
+Full reference: [docs/tui.md](docs/tui.md)
 
 ## How It Works
 
