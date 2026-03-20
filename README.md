@@ -395,6 +395,22 @@ Contributions are welcome! Please:
 4. Ensure tests pass
 5. Open a pull request
 
+## Roadmap
+
+lossless-code currently supports **Claude Code** natively. The hook and plugin ecosystem across coding agents is converging fast, and we're tracking compatibility:
+
+| Agent | Hook Support | MCP | Status | Notes |
+|-------|-------------|-----|--------|-------|
+| **Claude Code** | 20+ lifecycle events | ✅ | ✅ Supported | Full plugin with hooks, MCP, skills |
+| **Copilot CLI** | Claude Code format | ✅ | 🟢 Next | Reads `hooks.json` natively; lowest adaptation effort |
+| **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟡 Planned | Experimental hooks engine (v0.114.0+); MCP works today |
+| **Gemini CLI** | BeforeTool, AfterTool, lifecycle | ✅ | 🟡 Planned | Different event names; needs thin adapter layer |
+| **OpenCode** | session.compacting + plugin hooks | ✅ | 🔵 Researching | Plugin architecture differs; compacting hook maps to PreCompact |
+
+> **MCP works everywhere today.** Any agent that supports MCP servers can already use `lcc_grep`, `lcc_expand`, `lcc_context`, `lcc_sessions`, `lcc_handoff`, and `lcc_status` for manual recall. The roadmap above tracks *automatic* capture via hooks.
+
+Contributions welcome for any of the planned integrations.
+
 ## Star History
 
 <a href="https://star-history.com/#GodsBoy/lossless-code&Date">
