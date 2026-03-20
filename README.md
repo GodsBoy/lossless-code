@@ -15,9 +15,10 @@
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks-D97706?logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
+[![MCP](https://img.shields.io/badge/MCP-server-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/GodsBoy/lossless-code/pulls)
 
-[Getting Started](#install) · [Commands](#commands) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
+[Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
 
 </div>
 
@@ -45,30 +46,29 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
                               │   Session         │
                               └────────┬─────────┘
                                        │
-                    ┌──────────────────┼──────────────────┐
-                    │                  │                   │
-              ┌─────▼─────┐    ┌──────▼──────┐    ┌──────▼──────┐
-              │  Hooks     │    │   Skills    │    │   CLI       │
-              │            │    │             │    │   Tools     │
-              │ SessionStart│   │ lcc_grep    │    │             │
-              │ Stop       │    │ lcc_expand  │    │ lcc_status  │
-              │ PreCompact │    │ lcc_context │    │             │
-              │ PostCompact│    │ lcc_sessions│    │             │
-              │ UserPrompt │    │ lcc_handoff │    │             │
-              └─────┬──────┘    └──────┬──────┘    └──────┬──────┘
-                    │                  │                   │
-                    └──────────────────┼───────────────────┘
-                                       │
-                              ┌────────▼─────────┐
-                              │    vault.db       │
-                              │    (SQLite)       │
-                              │                   │
-                              │  messages         │
-                              │  summaries        │
-                              │  summary_sources  │
-                              │  sessions         │
-                              │  FTS5 indexes     │
-                              └───────────────────┘
+              ┌────────────────────────┼────────────────────────┐
+              │                  │                │              │
+        ┌─────▼─────┐    ┌──────▼──────┐  ┌──────▼──────┐ ┌────▼─────┐
+        │  Hooks     │    │   Skills    │  │   CLI       │ │  MCP     │
+        │  (write)   │    │  (shell)    │  │   Tools     │ │  Server  │
+        │            │    │             │  │             │ │  (stdio) │
+        │ SessionStart│   │ lcc_grep    │  │ lcc_status  │ │          │
+        │ Stop       │    │ lcc_expand  │  │             │ │ 6 tools  │
+        │ PreCompact │    │ lcc_context │  │             │ │ read-only│
+        │ PostCompact│    │ lcc_sessions│  │             │ │          │
+        │ UserPrompt │    │ lcc_handoff │  │             │ │          │
+        └─────┬──────┘    └──────┬──────┘  └──────┬──────┘ └────┬─────┘
+              │                  │                │              │
+              └──────────────────┼────────────────┼──────────────┘
+                                 │                │
+                        ┌────────▼────────────────▼──┐
+                        │         vault.db            │
+                        │         (SQLite)            │
+                        │                             │
+                        │  messages    summaries       │
+                        │  summary_sources  sessions   │
+                        │  FTS5 indexes                │
+                        └──────────────────────────────┘
 ```
 
 ## Install
@@ -94,6 +94,54 @@ Idempotent: safe to run again to upgrade.
 - Claude Code CLI
 
 Optional: `anthropic` Python package for AI-powered summarisation (falls back to extractive summaries without it).
+
+## MCP Server
+
+lossless-code includes an MCP (Model Context Protocol) server so Claude Code can access the vault as **native tools** without shelling out to CLI commands.
+
+### Setup
+
+The installer (`install.sh`) automatically:
+1. Copies the MCP server to `~/.lossless-code/mcp/server.py`
+2. Installs the `mcp` Python SDK
+3. Registers the server in `~/.claude.json`
+
+After installation, every new Claude Code session auto-discovers 6 MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `lcc_grep` | Full-text search across messages and summaries |
+| `lcc_expand` | Expand a summary back to source messages (DAG traversal) |
+| `lcc_context` | Get relevant context for a query |
+| `lcc_sessions` | List sessions with metadata |
+| `lcc_handoff` | Generate session handoff documents |
+| `lcc_status` | Vault statistics (sessions, messages, DAG depth, DB size) |
+
+### Manual Registration
+
+If you need to register the MCP server manually:
+
+```json
+// ~/.claude.json
+{
+  "mcpServers": {
+    "lossless-code": {
+      "command": "python3",
+      "args": ["~/.lossless-code/mcp/server.py"]
+    }
+  }
+}
+```
+
+### Architecture
+
+```
+  Claude Code  ──stdio──▶  MCP Server  ──read-only──▶  vault.db
+                            (server.py)
+                            6 tools
+```
+
+The MCP server is **read-only**. All writes to the vault happen through hooks (SessionStart, Stop, UserPromptSubmit, PreCompact, PostCompact). The MCP server imports `db.py` directly for SQLite access.
 
 ## Commands
 
