@@ -274,6 +274,15 @@ def get_messages_by_ids(ids: list) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def count_session_messages(session_id: str) -> int:
+    """Count messages already stored for a given session."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    return row[0] if row else 0
+
+
 # ---------------------------------------------------------------------------
 # Summaries & DAG
 # ---------------------------------------------------------------------------
@@ -358,7 +367,31 @@ def get_top_summaries(limit: int = 5, session_id: Optional[str] = None) -> list[
 # Full-text search
 # ---------------------------------------------------------------------------
 
+import re as _re
+
+# Characters that FTS5 treats as syntax operators
+_FTS5_SPECIAL = _re.compile(r'[*?()\"^+\-~:]')
+
+
+def escape_fts5_query(query: str) -> str:
+    """Escape an FTS5 query so special characters don't cause syntax errors.
+
+    Strips FTS5 operators and wraps each remaining word in double quotes
+    for exact matching.  Returns empty string if nothing useful remains.
+    """
+    # Remove special characters
+    cleaned = _FTS5_SPECIAL.sub(" ", query)
+    # Split into words and quote each one
+    words = cleaned.split()
+    if not words:
+        return ""
+    return " ".join(f'"{w}"' for w in words)
+
+
 def search_messages(query: str, limit: int = 20) -> list[dict]:
+    escaped = escape_fts5_query(query)
+    if not escaped:
+        return []
     db = get_db()
     rows = db.execute(
         """SELECT m.*, rank
@@ -367,12 +400,15 @@ def search_messages(query: str, limit: int = 20) -> list[dict]:
            WHERE messages_fts MATCH ?
            ORDER BY rank
            LIMIT ?""",
-        (query, limit),
+        (escaped, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def search_summaries(query: str, limit: int = 20) -> list[dict]:
+    escaped = escape_fts5_query(query)
+    if not escaped:
+        return []
     db = get_db()
     rows = db.execute(
         """SELECT s.*, rank
@@ -381,7 +417,7 @@ def search_summaries(query: str, limit: int = 20) -> list[dict]:
            WHERE summaries_fts MATCH ?
            ORDER BY rank
            LIMIT ?""",
-        (query, limit),
+        (escaped, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 

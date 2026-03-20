@@ -204,6 +204,64 @@ class TestDatabase(unittest.TestCase):
         msgs = db.get_messages_by_ids([id1, id2])
         self.assertEqual(len(msgs), 2)
 
+    # --- Bug 2: FTS5 special character escaping ---
+
+    def test_escape_fts5_basic(self):
+        result = db.escape_fts5_query("hello world")
+        self.assertEqual(result, '"hello" "world"')
+
+    def test_escape_fts5_question_mark(self):
+        result = db.escape_fts5_query("What was built?")
+        self.assertEqual(result, '"What" "was" "built"')
+
+    def test_escape_fts5_special_chars(self):
+        result = db.escape_fts5_query('test * (foo) "bar" ^baz +qux -quux ~corge :grault')
+        self.assertNotIn("*", result)
+        self.assertNotIn("(", result)
+        self.assertNotIn(")", result)
+        self.assertNotIn("^", result)
+        self.assertNotIn("+", result.replace('"', ""))  # quotes are expected
+        self.assertNotIn("~", result)
+
+    def test_escape_fts5_empty(self):
+        result = db.escape_fts5_query("???")
+        self.assertEqual(result, "")
+
+    def test_fts_search_with_special_chars(self):
+        """Queries with special chars should not crash."""
+        db.ensure_session("fts-special", "/tmp")
+        db.store_message("fts-special", "user", "What was the magic number built here")
+
+        # These previously crashed with sqlite3.OperationalError
+        results = db.search_messages("What was built?")
+        self.assertIsInstance(results, list)
+
+        results = db.search_messages("magic number (42)")
+        self.assertIsInstance(results, list)
+
+        results = db.search_messages("test*query")
+        self.assertIsInstance(results, list)
+
+    def test_fts_search_empty_after_escape(self):
+        """Query that becomes empty after escaping returns empty list."""
+        results = db.search_messages("???")
+        self.assertEqual(results, [])
+
+    # --- Bug 1: count_session_messages ---
+
+    def test_count_session_messages(self):
+        db.ensure_session("count-session", "/tmp")
+        self.assertEqual(db.count_session_messages("count-session"), 0)
+
+        db.store_message("count-session", "user", "msg one")
+        self.assertEqual(db.count_session_messages("count-session"), 1)
+
+        db.store_message("count-session", "assistant", "msg two")
+        self.assertEqual(db.count_session_messages("count-session"), 2)
+
+    def test_count_session_messages_nonexistent(self):
+        self.assertEqual(db.count_session_messages("nonexistent-session"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

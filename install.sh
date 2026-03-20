@@ -54,6 +54,16 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     fi
 done
 
+# ── 4b. Create symlinks for non-login shell access ──────────────────────
+# Hooks run in non-login shells where .bashrc/.zshrc may not be sourced.
+
+mkdir -p "$HOME/.local/bin"
+for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status; do
+    ln -sf "$LOSSLESS_HOME/scripts/$cmd" /usr/local/bin/$cmd 2>/dev/null || \
+    ln -sf "$LOSSLESS_HOME/scripts/$cmd" "$HOME/.local/bin/$cmd" 2>/dev/null || true
+done
+echo "  [ok] Created symlinks for PATH accessibility"
+
 # Export for current session
 export PATH="$LOSSLESS_HOME/scripts:$PATH"
 
