@@ -11,6 +11,8 @@ pip install textual
 ln -sf /path/to/lossless-code/tui/lcc-tui /usr/local/bin/lcc-tui
 ```
 
+![lcc-tui sessions view](images/lcc-tui-sessions.jpg)
+
 ## Quick Start
 
 ```bash

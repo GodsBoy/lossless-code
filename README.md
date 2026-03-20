@@ -234,6 +234,8 @@ lcc-tui
 - `Esc` — go back
 - `q` — quit
 
+![lcc-tui sessions view](docs/images/lcc-tui-sessions.jpg)
+
 Full reference: [docs/tui.md](docs/tui.md)
 
 ## How It Works
