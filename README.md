@@ -407,9 +407,7 @@ Contributions are welcome! Please:
 
 ## Contributors
 
-<a href="https://github.com/GodsBoy/lossless-code/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=GodsBoy/lossless-code" />
-</a>
+[![GodsBoy](https://github.com/GodsBoy.png?size=60)](https://github.com/GodsBoy)
 
 ## Licence
 
