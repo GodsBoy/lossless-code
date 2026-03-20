@@ -25,6 +25,8 @@ cp "$SCRIPT_DIR/scripts/db.py"                "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/summarise.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/inject_context.py"    "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/lcc.py"               "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/lcc"                  "$LOSSLESS_HOME/scripts/"
+chmod +x "$LOSSLESS_HOME/scripts/lcc"
 cp "$SCRIPT_DIR/scripts/hook_stop.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_session_start.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_store_message.py" "$LOSSLESS_HOME/scripts/"
@@ -42,6 +44,11 @@ for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status; 
     chmod +x "$LOSSLESS_HOME/scripts/$cmd"
 done
 echo "  [ok] Installed CLI commands"
+
+# Install lcc CLI
+cp "$SCRIPT_DIR/scripts/lcc" "$LOSSLESS_HOME/scripts/lcc"
+chmod +x "$LOSSLESS_HOME/scripts/lcc"
+echo "  [ok] Installed lcc CLI"
 
 # ── 4. Add to PATH via shell profile ────────────────────────────────────
 
@@ -64,7 +71,7 @@ done
 # Hooks run in non-login shells where .bashrc/.zshrc may not be sourced.
 
 mkdir -p "$HOME/.local/bin"
-for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status; do
+for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status lcc; do
     ln -sf "$LOSSLESS_HOME/scripts/$cmd" /usr/local/bin/$cmd 2>/dev/null || \
     ln -sf "$LOSSLESS_HOME/scripts/$cmd" "$HOME/.local/bin/$cmd" 2>/dev/null || true
 done
@@ -315,7 +322,7 @@ python3 "$LOSSLESS_HOME/scripts/lcc.py" status
 echo ""
 echo "lossless-code installed successfully!"
 echo ""
-echo "Commands available: lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc-tui"
+echo "Commands available: lcc, lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc-tui"
 echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
 echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact"
 echo ""

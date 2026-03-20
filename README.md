@@ -277,6 +277,7 @@ Full reference: [docs/tui.md](docs/tui.md)
 ```json
 {
   "summaryModel": "claude-haiku-4-5-20251001",
+  "summaryProvider": "anthropic",
   "chunkSize": 20,
   "depthThreshold": 10,
   "incrementalMaxDepth": -1,
@@ -286,11 +287,101 @@ Full reference: [docs/tui.md](docs/tui.md)
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `summaryModel` | `claude-haiku-4-5-20251001` | Model for summarisation |
-| `chunkSize` | `20` | Messages per summary chunk |
+| `summaryModel` | `claude-haiku-4-5-20251001` | Model for compactions |
+| `summaryProvider` | `anthropic` | LLM provider: `anthropic` or `openai` |
+| `chunkSize` | `20` | Messages per compaction chunk |
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
 | `incrementalMaxDepth` | `-1` | Max cascade depth (-1 = unlimited) |
 | `workingDirFilter` | `null` | Only capture messages from this directory |
+
+## Compaction Configuration
+
+lossless-code supports multiple LLM providers for compactions. Configure your provider in `~/.lossless-code/config.json`:
+
+```json
+{
+  "summaryModel": "gpt-4.1-mini",
+  "summaryProvider": "openai",
+  "chunkSize": 20,
+  "depthThreshold": 10
+}
+```
+
+### Supported Providers
+
+**Anthropic** (default)
+
+Set `ANTHROPIC_API_KEY` in your environment.
+
+```json
+{ "summaryProvider": "anthropic", "summaryModel": "claude-haiku-4-5-20251001" }
+```
+
+Model examples: `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`
+
+**OpenAI**
+
+Set `OPENAI_API_KEY` in your environment.
+
+```json
+{ "summaryProvider": "openai", "summaryModel": "gpt-4.1-mini" }
+```
+
+Model examples: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`
+
+You can use any model your provider supports — these are just common choices.
+
+### Cost Comparison
+
+| Model | Input cost (per 1M tokens) |
+|-------|---------------------------|
+| `gpt-4.1-nano` | ~$0.10 |
+| `gpt-4o-mini` | ~$0.15 |
+| `gpt-4.1-mini` | ~$0.40 |
+| `claude-haiku-4-5-20251001` | ~$0.80 |
+| `claude-sonnet-4-20250514` | ~$3.00 |
+
+### Estimated Monthly Costs
+
+For typical compaction workloads using `gpt-4.1-mini`:
+
+| Usage | Estimated cost |
+|-------|---------------|
+| Light (1–2 sessions/day) | $1–3/month |
+| Moderate (3–5 sessions/day) | $3–7/month |
+| Heavy (10+ sessions/day) | $7–15/month |
+
+Compactions are triggered automatically before context compaction (PreCompact hook) and at session end (Stop hook). The extractive fallback is used automatically if no API key is configured — there is no hard dependency on any LLM provider.
+
+## CLI Usage
+
+The `lcc` CLI provides direct access to vault operations.
+
+```bash
+# Run compaction manually
+lcc summarise --run
+
+# Run compaction for a specific session
+lcc summarise --run --session <session-id>
+
+# Check vault status
+lcc status
+
+# Search all messages and summaries
+lcc grep "auth refactor"
+
+# Show handoff from last session
+lcc handoff
+
+# Generate and save a handoff for current session
+lcc handoff --generate --session "$CLAUDE_SESSION_ID"
+
+# List recent sessions
+lcc sessions
+
+# Expand a summary node
+lcc expand sum_abc123def456
+```
 
 ## Schema
 

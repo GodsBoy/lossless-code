@@ -26,10 +26,11 @@ def estimate_tokens(text: str) -> int:
 
 def call_summary_model(text: str, cfg: dict) -> str:
     """
-    Call Claude via the Anthropic CLI / API to produce a summary.
+    Call an LLM to produce a summary. Supports Anthropic and OpenAI providers.
 
     Falls back to a simple extractive summary if the API is unavailable.
     """
+    provider = cfg.get("summaryProvider", "anthropic")
     model = cfg.get("summaryModel", "claude-haiku-4-5-20251001")
 
     prompt = (
@@ -39,19 +40,32 @@ def call_summary_model(text: str, cfg: dict) -> str:
         f"{text}"
     )
 
-    # Try Anthropic Python SDK first
-    try:
-        import anthropic
+    if provider == "openai":
+        try:
+            from openai import OpenAI
 
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
-    except Exception:
-        pass
+            client = OpenAI()  # reads OPENAI_API_KEY from env
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.choices[0].message.content
+        except Exception:
+            pass
+    elif provider == "anthropic":
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model=model,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except Exception:
+            pass
 
     # Fallback: extractive summary (take first line of each turn)
     lines = text.strip().split("\n")

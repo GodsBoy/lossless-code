@@ -168,6 +168,12 @@ def cmd_handoff(args):
             print("No handoff available. Use --generate to create one.")
 
 
+def cmd_summarise(args):
+    """Run compaction (summarisation) on vault messages."""
+    result = summarise_mod.run_full_summarisation(args.session)
+    print(json.dumps(result, indent=2))
+
+
 def cmd_status(args):
     """Show vault statistics."""
     d = db.get_db()
@@ -193,6 +199,12 @@ def main():
         description="Lossless Context Commands for Claude Code",
     )
     sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # summarise
+    p_sum = sub.add_parser("summarise", help="Run compaction (summarisation)")
+    p_sum.add_argument("--run", action="store_true", help="Execute compaction now")
+    p_sum.add_argument("--session", help="Limit to a specific session ID")
+    p_sum.set_defaults(func=cmd_summarise)
 
     # grep
     p_grep = sub.add_parser("grep", help="Full-text search")
@@ -230,6 +242,10 @@ def main():
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
+        return
+
+    if args.command == "summarise" and not args.run:
+        print("Use --run to execute compaction. Example: lcc summarise --run")
         return
 
     args.func(args)
