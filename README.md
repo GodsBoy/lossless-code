@@ -73,6 +73,17 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
 
 ## Install
 
+### Option A: Claude Code Plugin (recommended)
+
+```
+/plugin marketplace add GodsBoy/lossless-code
+/plugin install lossless-code
+```
+
+Hooks, MCP server, and skill are activated automatically. No manual setup needed.
+
+### Option B: Standalone Install
+
 ```bash
 git clone https://github.com/GodsBoy/lossless-code.git
 cd lossless-code
