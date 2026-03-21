@@ -155,34 +155,21 @@ lcc_hooks = {
             "timeout": 15
         }]
     }],
+    # PreCompact and PostCompact are registered here for standalone installs.
+    # If the lossless-code plugin is also active, the cooldown mechanism in
+    # each hook script prevents double execution.
     "PreCompact": [{
-        "matcher": "auto",
         "hooks": [{
             "type": "command",
             "command": f"{hooks_dir}/pre_compact.sh",
-            "timeout": 5
-        }]
-    }, {
-        "matcher": "manual",
-        "hooks": [{
-            "type": "command",
-            "command": f"{hooks_dir}/pre_compact.sh",
-            "timeout": 5
+            "timeout": 10
         }]
     }],
     "PostCompact": [{
-        "matcher": "auto",
         "hooks": [{
             "type": "command",
             "command": f"{hooks_dir}/post_compact.sh",
-            "timeout": 30
-        }]
-    }, {
-        "matcher": "manual",
-        "hooks": [{
-            "type": "command",
-            "command": f"{hooks_dir}/post_compact.sh",
-            "timeout": 30
+            "timeout": 10
         }]
     }]
 }

@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "LOSSLESS_HOME=${CLAUDE_PLUGIN_ROOT} bash ${CLAUDE_PLUGIN_ROOT}/hooks/pre_compact.sh",
-            "timeout": 30
+            "timeout": 10
           }
         ]
       }
