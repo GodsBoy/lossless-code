@@ -24,21 +24,34 @@
 
 ---
 
+> Claude Code forgets. claude-mem remembers fragments. lossless-code remembers everything.
+
+## Try it in 60 seconds
+
+```
+/plugin marketplace add GodsBoy/lossless-code
+/plugin install lossless-code
+```
+
+That's it. Start a new session and search your history:
+
+> lcc_grep "database migration"
+
 ## The Problem
 
-Claude Code forgets everything between sessions. Existing memory tools (ClawMem, context-memory, context-mode, claude-mem) use flat retrieval-augmented memory: keyword search over stored snippets with no structure, no hierarchy, and no way to drill from a summary back to the original conversation.
+Claude Code forgets everything between sessions. Memory tools like ClawMem, context-memory, and claude-mem use flat retrieval: keyword search over snippets, no structure, no hierarchy, no way to trace a summary back to its source conversation.
 
-When your project spans weeks and hundreds of sessions, flat search breaks down. You get fragments without lineage.
+When a project spans weeks and hundreds of sessions, flat search fails. You get fragments without lineage.
 
 ## What Makes lossless-code Different
 
 lossless-code uses **DAG-based lossless preservation**, the same approach pioneered by [lossless-claw](https://github.com/Martian-Engineering/lossless-claw) for [OpenClaw](https://github.com/openclaw/openclaw):
 
 - **Nothing is ever deleted.** Every message stays in `vault.db` forever.
-- **Summaries form a directed acyclic graph.** Messages become depth-0 summaries, which cascade to depth-1, depth-2, and beyond.
-- **Full drill-down.** `lcc_expand` traces any summary node back to the original messages that created it.
-- **Automatic.** Claude Code hooks capture every turn and trigger summarisation transparently. No manual effort.
-- **Cross-session recall.** Start a new session and your full project history is immediately searchable and injectable.
+- **Summaries form a directed acyclic graph.** Messages cascade to depth-0 summaries, which roll up to depth-1, depth-2, and beyond.
+- **Full drill-down.** `lcc_expand` traces any summary back to the exact messages that created it.
+- **Automatic.** Claude Code hooks capture every turn and trigger summarisation transparently. Zero manual effort.
+- **Cross-session recall.** Start a new session and your full project history is immediately searchable.
 
 ```
                               ┌──────────────────┐
@@ -70,6 +83,72 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
                         │  FTS5 indexes                │
                         └──────────────────────────────┘
 ```
+
+## Comparison
+
+| | lossless-code | ClawMem | context-memory | claude-mem |
+|---|---|---|---|---|
+| **Storage** | SQLite with FTS5 | SQLite + vector DB | Markdown files | SQLite + Chroma |
+| **Structure** | DAG (summaries cascade) | Flat RAG retrieval | Flat retrieval | Flat retrieval |
+| **Drill-down** | Full (summary to source messages) | None | None | None |
+| **Auto-capture** | Hooks (zero manual effort) | Hooks + watcher | Manual | Hooks + worker |
+| **Cross-session** | Yes (vault persists) | Yes | Yes | Yes |
+| **Summarisation** | Cascading DAG (depth-N) | Single-level | None | Single-level |
+| **Search** | FTS5 full-text | Hybrid (BM25 + vector + reranker) | Keyword | Hybrid (BM25 + vector) |
+| **MCP tools** | 6 | 28 | 0 | 10+ |
+| **Background services** | None | watcher + embed timer + GPU servers | None | Worker on port 37777 |
+| **Runtime** | Python (stdlib) | Bun + llama.cpp (optional) | None | Bun |
+| **Models required** | None (optional for summarisation) | 2GB+ GGUF (embed + reranker) | None | Chroma embeddings |
+| **Idle cost** | Zero | CPU/RAM for services + embedding sweeps | Zero | Worker process |
+
+## Why lossless-code Costs Less
+
+Memory tools that inject context on every prompt are silently expensive. Here's why lossless-code's design saves tokens:
+
+### 1. On-demand recall, not automatic injection
+
+ClawMem injects relevant memory into **90% of prompts automatically** (their stated design). claude-mem injects a context index on every SessionStart. Both approaches front-load tokens whether or not the agent needs that context.
+
+lossless-code injects **nothing by default**. Context surfaces only when the agent explicitly calls an MCP tool or the PreCompact hook fires. Most coding turns (writing code, running tests, reading files) don't need historical context at all. You pay for recall only when recall matters.
+
+### 2. Fewer MCP tool definitions = fewer tokens per turn
+
+Every MCP tool registered in `~/.claude.json` has its schema injected into **every single API call** as available tools. Claude Code's own docs warn: *"Prefer CLI tools when available... they don't add persistent tool definitions."*
+
+- ClawMem: **28 MCP tools** (query, intent_search, find_causal_links, timeline, similar, etc.)
+- claude-mem: **10+ search endpoints** via worker service
+- lossless-code: **6 MCP tools** (grep, expand, context, sessions, handoff, status)
+
+Over a 200-turn session, that difference in tool schema overhead compounds significantly.
+
+### 3. No background embedding costs
+
+ClawMem runs a watcher service (re-indexes on file changes) and an embed timer (daily embedding sweep across all collections). These require GGUF models (~2GB minimum) and consume CPU/GPU continuously. claude-mem runs a persistent worker service on port 37777.
+
+lossless-code has **zero background processes**. Hooks fire only during Claude Code events. The vault is pure SQLite with FTS5 (built into SQLite, no external models). Nothing runs between sessions.
+
+### 4. DAG summarisation reduces compaction waste
+
+When Claude Code hits its context limit, it compacts: summarising earlier context to make room. With flat memory systems, compaction loses fidelity and the agent may re-explore territory it forgot, costing more tokens ("debugging in circles").
+
+lossless-code's DAG captures the full conversation **before** compaction happens (PreCompact hook). After compaction, the PostCompact hook re-injects only the top-level summaries. The agent can drill down via `lcc_expand` if it needs detail, but the DAG ensures nothing is truly lost. This means:
+
+- Fewer repeated explorations after compaction
+- One long session is cheaper than multiple short sessions covering the same ground
+- Context survives compaction without paying to re-read everything
+
+### 5. No runtime dependencies
+
+| Dependency | lossless-code | ClawMem | claude-mem |
+|---|---|---|---|
+| Python 3.10+ | Yes (usually pre-installed) | No | No |
+| Bun | No | **Required** | **Required** |
+| llama.cpp / GGUF models | No | Optional (2GB+) | No |
+| Chroma / vector DB | No | No | **Required** |
+| systemd services | No | Recommended | No |
+| `mcp` Python SDK | Yes (pip install) | No (TypeScript) | No |
+
+Fewer dependencies means less to maintain, fewer failure modes, and lower resource consumption.
 
 ## Install
 
@@ -221,18 +300,18 @@ lcc-tui
 
 | Tab | Key | Description |
 |-----|-----|-------------|
-| Sessions | `1` | Browse all sessions — select to view messages |
+| Sessions | `1` | Browse all sessions; select to view messages |
 | Search | `2` | Full-text search across messages and summaries |
-| Summaries | `3` | Browse DAG summaries by depth — select to expand |
+| Summaries | `3` | Browse DAG summaries by depth; select to expand |
 | Stats | `4` | Dashboard: sessions, messages, summaries, vault size |
 
 ### Navigation
 
-- `1`–`4` — switch tabs
-- `/` — open search modal from any view
-- `Enter` — drill into selected session or summary
-- `Esc` — go back
-- `q` — quit
+- `1` to `4`: switch tabs
+- `/`: open search modal from any view
+- `Enter`: drill into selected session or summary
+- `Esc`: go back
+- `q`: quit
 
 ![lcc-tui sessions view](docs/images/lcc-tui-sessions.jpg)
 
@@ -335,7 +414,7 @@ Set `OPENAI_API_KEY` in your environment.
 
 Model examples: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`
 
-You can use any model your provider supports — these are just common choices.
+You can use any model your provider supports. These are just common choices.
 
 ### Cost Comparison
 
@@ -353,11 +432,11 @@ For typical compaction workloads using `gpt-4.1-mini`:
 
 | Usage | Estimated cost |
 |-------|---------------|
-| Light (1–2 sessions/day) | $1–3/month |
-| Moderate (3–5 sessions/day) | $3–7/month |
-| Heavy (10+ sessions/day) | $7–15/month |
+| Light (1-2 sessions/day) | $1-3/month |
+| Moderate (3-5 sessions/day) | $3-7/month |
+| Heavy (10+ sessions/day) | $7-15/month |
 
-Compactions are triggered automatically before context compaction (PreCompact hook) and at session end (Stop hook). The extractive fallback is used automatically if no API key is configured — there is no hard dependency on any LLM provider.
+Compactions are triggered automatically before context compaction (PreCompact hook) and at session end (Stop hook). The extractive fallback runs automatically when no API key is configured: no hard dependency on any LLM provider.
 
 ## CLI Usage
 
@@ -399,72 +478,6 @@ summary_sources -- summary_id, source_type, source_id
 messages_fts  -- FTS5 index on messages.content
 summaries_fts -- FTS5 index on summaries.content
 ```
-
-## Comparison
-
-| | lossless-code | ClawMem | context-memory | claude-mem |
-|---|---|---|---|---|
-| **Storage** | SQLite with FTS5 | SQLite + vector DB | Markdown files | SQLite + Chroma |
-| **Structure** | DAG (summaries cascade) | Flat RAG retrieval | Flat retrieval | Flat retrieval |
-| **Drill-down** | Full (summary to source messages) | None | None | None |
-| **Auto-capture** | Hooks (zero manual effort) | Hooks + watcher | Manual | Hooks + worker |
-| **Cross-session** | Yes (vault persists) | Yes | Yes | Yes |
-| **Summarisation** | Cascading DAG (depth-N) | Single-level | None | Single-level |
-| **Search** | FTS5 full-text | Hybrid (BM25 + vector + reranker) | Keyword | Hybrid (BM25 + vector) |
-| **MCP tools** | 6 | 28 | 0 | 10+ |
-| **Background services** | None | watcher + embed timer + GPU servers | None | Worker on port 37777 |
-| **Runtime** | Python (stdlib) | Bun + llama.cpp (optional) | None | Bun |
-| **Models required** | None (optional for summarisation) | 2GB+ GGUF (embed + reranker) | None | Chroma embeddings |
-| **Idle cost** | Zero | CPU/RAM for services + embedding sweeps | Zero | Worker process |
-
-## Why lossless-code Costs Less
-
-Memory tools that inject context on every prompt are silently expensive. Here's why lossless-code's design saves tokens:
-
-### 1. On-demand recall, not automatic injection
-
-ClawMem injects relevant memory into **90% of prompts automatically** (their stated design). claude-mem injects a context index on every SessionStart. Both approaches front-load tokens whether or not the agent needs that context.
-
-lossless-code injects **nothing by default**. Context surfaces only when the agent explicitly calls an MCP tool or the PreCompact hook fires. Most coding turns (writing code, running tests, reading files) don't need historical context at all. You pay for recall only when recall matters.
-
-### 2. Fewer MCP tool definitions = fewer tokens per turn
-
-Every MCP tool registered in `~/.claude.json` has its schema injected into **every single API call** as available tools. Claude Code's own docs warn: *"Prefer CLI tools when available... they don't add persistent tool definitions."*
-
-- ClawMem: **28 MCP tools** (query, intent_search, find_causal_links, timeline, similar, etc.)
-- claude-mem: **10+ search endpoints** via worker service
-- lossless-code: **6 MCP tools** (grep, expand, context, sessions, handoff, status)
-
-Over a 200-turn session, that difference in tool schema overhead compounds significantly.
-
-### 3. No background embedding costs
-
-ClawMem runs a watcher service (re-indexes on file changes) and an embed timer (daily embedding sweep across all collections). These require GGUF models (~2GB minimum) and consume CPU/GPU continuously. claude-mem runs a persistent worker service on port 37777.
-
-lossless-code has **zero background processes**. Hooks fire only during Claude Code events. The vault is pure SQLite with FTS5 (built into SQLite, no external models). There's nothing running between sessions.
-
-### 4. DAG summarisation reduces compaction waste
-
-When Claude Code hits its context limit, it compacts: summarising earlier context to make room. With flat memory systems, compaction loses fidelity and the agent may re-explore territory it forgot, costing more tokens ("debugging in circles").
-
-lossless-code's DAG captures the full conversation **before** compaction happens (PreCompact hook). After compaction, the PostCompact hook re-injects only the top-level summaries. The agent can drill down via `lcc_expand` if it needs detail, but the DAG ensures nothing is truly lost. This means:
-
-- Fewer repeated explorations after compaction
-- One long session is cheaper than multiple short sessions covering the same ground
-- Context survives compaction without paying to re-read everything
-
-### 5. No runtime dependencies
-
-| Dependency | lossless-code | ClawMem | claude-mem |
-|---|---|---|---|
-| Python 3.10+ | Yes (usually pre-installed) | No | No |
-| Bun | No | **Required** | **Required** |
-| llama.cpp / GGUF models | No | Optional (2GB+) | No |
-| Chroma / vector DB | No | No | **Required** |
-| systemd services | No | Recommended | No |
-| `mcp` Python SDK | Yes (pip install) | No (TypeScript) | No |
-
-Fewer dependencies = less to maintain, fewer failure modes, less resource consumption.
 
 ## Uninstall
 
