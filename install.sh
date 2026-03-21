@@ -160,14 +160,14 @@ lcc_hooks = {
         "hooks": [{
             "type": "command",
             "command": f"{hooks_dir}/pre_compact.sh",
-            "timeout": 120
+            "timeout": 5
         }]
     }, {
         "matcher": "manual",
         "hooks": [{
             "type": "command",
             "command": f"{hooks_dir}/pre_compact.sh",
-            "timeout": 120
+            "timeout": 5
         }]
     }],
     "PostCompact": [{

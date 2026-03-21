@@ -1,5 +1,5 @@
 #!/bin/bash
-# lossless-code: Record compaction event and link to DAG after compact
+# lossless-code: Record compaction event (NO context injection — causes compact loops)
 set -euo pipefail
 
 SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
@@ -19,21 +19,8 @@ python3 "$SCRIPTS_DIR/hook_store_message.py" \
     --content "[Context compaction occurred at $(date -u +%Y-%m-%dT%H:%M:%SZ)]" \
     2>/dev/null || true
 
-# Inject top summaries back so Claude retains critical context post-compaction
-CONTEXT=$(python3 "$SCRIPTS_DIR/inject_context.py" --session "$SESSION_ID" --limit 5 2>/dev/null || echo "")
-
-if [ -n "$CONTEXT" ]; then
-    python3 -c "
-import json, sys
-ctx = sys.stdin.read()
-if ctx.strip():
-    print(json.dumps({
-        'hookSpecificOutput': {
-            'hookEventName': 'PostCompact',
-            'additionalContext': ctx
-        }
-    }))
-" <<< "$CONTEXT"
-fi
+# DO NOT inject context back — it pushes tokens up and triggers
+# another auto-compact, creating an infinite loop.
+# Context recall is available via MCP tools (lcc_grep, lcc_expand).
 
 exit 0

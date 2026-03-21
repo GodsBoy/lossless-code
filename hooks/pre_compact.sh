@@ -1,5 +1,6 @@
 #!/bin/bash
-# lossless-code: Run DAG summarisation before Claude compacts context
+# lossless-code: Persist messages to vault BEFORE Claude discards them
+# Run summarisation in background so it doesn't block compaction
 set -euo pipefail
 
 SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
@@ -11,7 +12,8 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Run full DAG summarisation pass
-python3 "$SCRIPTS_DIR/summarise.py" --session "$SESSION_ID" 2>/dev/null || true
+# Run DAG summarisation in background — don't block Claude's compaction
+nohup python3 "$SCRIPTS_DIR/summarise.py" --session "$SESSION_ID" \
+    >/dev/null 2>&1 &
 
 exit 0
