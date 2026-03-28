@@ -18,7 +18,7 @@
 [![MCP](https://img.shields.io/badge/MCP-server-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/GodsBoy/lossless-code/pulls)
 
-[Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [Terminal UI](#terminal-ui-lcc-tui) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
+[Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [Dream](#lossless-dream) · [Terminal UI](#terminal-ui-lcc-tui) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
 
 </div>
 
@@ -52,6 +52,7 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
 - **Full drill-down.** `lcc_expand` traces any summary back to the exact messages that created it.
 - **Automatic.** Claude Code hooks capture every turn and trigger summarisation transparently. Zero manual effort.
 - **Cross-session recall.** Start a new session and your full project history is immediately searchable.
+- **Lossless Dream.** Extracts recurring patterns (corrections, preferences, conventions) from vault history and injects them into future sessions — like Auto-Dream but without forgetting.
 
 ```
                               ┌──────────────────┐
@@ -282,11 +283,23 @@ lcc_handoff --generate --session "$CLAUDE_SESSION_ID"
 
 ### `lcc_status`
 
-Show vault statistics: message count, summary count, DAG depth, and FTS index health.
+Show vault statistics: message count, summary count, DAG depth, dream stats, and FTS index health.
 
 ```bash
 lcc_status
 ```
+
+### `lcc_dream`
+
+Run the dream cycle — extract patterns from vault history and consolidate the DAG.
+
+```bash
+lcc_dream --run                    # Dream for current working directory
+lcc_dream --run --project /path    # Dream for a specific project
+lcc_dream --run --global           # Cross-project dream
+```
+
+See [Lossless Dream](#lossless-dream) for details.
 
 ## Terminal UI (lcc-tui)
 
@@ -324,7 +337,7 @@ Full reference: [docs/tui.md](docs/tui.md)
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `session_start.sh` | SessionStart | Register session, inject handoff + summaries |
-| `stop.sh` | Stop | Persist each turn to vault.db |
+| `stop.sh` | Stop | Persist each turn to vault.db; trigger auto-dream if conditions met |
 | `user_prompt_submit.sh` | UserPromptSubmit | Surface relevant context for the prompt |
 | `pre_compact.sh` | PreCompact | Run DAG summarisation before compaction |
 | `post_compact.sh` | PostCompact | Record compaction, re-inject top summaries |
@@ -339,14 +352,46 @@ Full reference: [docs/tui.md](docs/tui.md)
 6. If depth-N exceeds threshold: cascade to depth-N+1
 7. Repeat until under threshold at every depth
 
+### Lossless Dream
+
+Dream is the intelligence layer on top of the DAG. It analyzes vault history to extract recurring patterns and consolidate redundant summaries — all without deleting anything.
+
+**Three-phase cycle:**
+
+1. **Pattern extraction** — Queries messages and summaries since the last dream, chunks them, and sends each chunk to the LLM. Extracts patterns in 5 categories: corrections, preferences, anti-patterns, conventions, decisions. Falls back to keyword heuristics when no LLM API is available.
+2. **DAG consolidation** — Finds summaries with overlapping sources (>50% shared), merges them into tighter nodes via LLM, marks originals as `consolidated=1`. Nothing is deleted.
+3. **Report generation** — Writes a timestamped report and updates the dream log for idempotent reruns.
+
+**Auto-trigger:** Dream runs automatically from the `stop.sh` hook when configurable conditions are met (default: 5+ sessions or 24+ hours since last dream). Runs as a background process with file-based locking to prevent concurrent races.
+
+**Context injection:** On SessionStart, per-project and global dream patterns are injected alongside existing handoff and summaries, within a configurable token budget (default 2000 tokens).
+
+**Lineage:** Every pattern in `patterns.md` includes source reference IDs. Use `lcc_expand` to trace any pattern back to the original conversation.
+
+```bash
+# Run dream manually
+lcc dream --run
+
+# Dream for a specific project
+lcc dream --run --project /path/to/project
+
+# Cross-project dream
+lcc dream --run --global
+```
+
 ### Storage
 
 ```
 ~/.lossless-code/
-  vault.db       # SQLite: all messages, summaries, DAG, sessions
-  config.json    # Settings (summary model, thresholds)
+  vault.db       # SQLite: all messages, summaries, DAG, sessions, dream_log
+  config.json    # Settings (summary model, thresholds, dream config)
   scripts/       # Python modules and CLI tools
   hooks/         # Shell scripts called by Claude Code hooks
+  dream/         # Dream output
+    reports/     # Timestamped dream reports
+    projects/    # Per-project pattern files (keyed by working dir hash)
+    global/      # Cross-project pattern files
+    dream.log    # Dream cycle log (for debugging background execution)
 ```
 
 ## Configuration
@@ -360,7 +405,12 @@ Full reference: [docs/tui.md](docs/tui.md)
   "chunkSize": 20,
   "depthThreshold": 10,
   "incrementalMaxDepth": -1,
-  "workingDirFilter": null
+  "workingDirFilter": null,
+  "autoDream": true,
+  "dreamAfterSessions": 5,
+  "dreamAfterHours": 24,
+  "dreamModel": "claude-haiku-4-5-20251001",
+  "dreamTokenBudget": 2000
 }
 ```
 
@@ -372,6 +422,11 @@ Full reference: [docs/tui.md](docs/tui.md)
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
 | `incrementalMaxDepth` | `-1` | Max cascade depth (-1 = unlimited) |
 | `workingDirFilter` | `null` | Only capture messages from this directory |
+| `autoDream` | `true` | Enable automatic dream trigger from stop hook |
+| `dreamAfterSessions` | `5` | Sessions since last dream before auto-trigger |
+| `dreamAfterHours` | `24` | Hours since last dream before auto-trigger |
+| `dreamModel` | `claude-haiku-4-5-20251001` | Model for dream pattern extraction |
+| `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
 
 ## Compaction Configuration
 
@@ -466,17 +521,24 @@ lcc sessions
 
 # Expand a summary node
 lcc expand sum_abc123def456
+
+# Run dream cycle
+lcc dream --run
+
+# Dream for a specific project directory
+lcc dream --run --project /path/to/project
 ```
 
 ## Schema
 
 ```sql
-sessions      -- session_id, working_dir, started_at, last_active, handoff_text
-messages      -- id, session_id, turn_id, role, content, tool_name, working_dir, timestamp, summarised
-summaries     -- id, session_id, content, depth, token_count, created_at
+sessions        -- session_id, working_dir, started_at, last_active, handoff_text
+messages        -- id, session_id, turn_id, role, content, tool_name, working_dir, timestamp, summarised
+summaries       -- id, session_id, content, depth, token_count, created_at, consolidated
 summary_sources -- summary_id, source_type, source_id
-messages_fts  -- FTS5 index on messages.content
-summaries_fts -- FTS5 index on summaries.content
+dream_log       -- id, project_hash, scope, dreamed_at, patterns_found, consolidations, sessions_analyzed, report_path
+messages_fts    -- FTS5 index on messages.content
+summaries_fts   -- FTS5 index on summaries.content
 ```
 
 ## Uninstall
