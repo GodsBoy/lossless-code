@@ -16,6 +16,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
+def _load_dream_patterns(working_dir: str = "", config: dict = None) -> str:
+    """Load dream patterns for injection into session context.
+
+    Reads per-project patterns (if working_dir matches) and global patterns.
+    Combines within the configured token budget.
+    """
+    if config is None:
+        config = db.load_config()
+
+    token_budget = config.get("dreamTokenBudget", 2000)
+    dream_dir = db.VAULT_DIR / "dream"
+    parts = []
+
+    # Per-project patterns
+    if working_dir:
+        phash = db.project_hash(working_dir)
+        project_path = dream_dir / "projects" / phash / "patterns.md"
+        if project_path.exists():
+            try:
+                content = project_path.read_text().strip()
+                if content:
+                    parts.append(content)
+            except OSError:
+                pass
+
+    # Global patterns
+    global_path = dream_dir / "global" / "patterns.md"
+    if global_path.exists():
+        try:
+            content = global_path.read_text().strip()
+            if content:
+                parts.append(content)
+        except OSError:
+            pass
+
+    if not parts:
+        return ""
+
+    combined = "\n\n".join(parts)
+
+    # Truncate to token budget (rough estimate: 4 chars per token)
+    max_chars = token_budget * 4
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n... [truncated to token budget]"
+
+    return combined
+
+
 def get_handoff(session_id: str = None) -> str:
     """Get handoff text from the most recent session (or a specific one)."""
     if session_id:
@@ -63,6 +111,11 @@ def build_context(
         for i, s in enumerate(summaries, 1):
             depth_label = f"depth-{s['depth']}" if 'depth' in s else ""
             parts.append(f"### [{i}] {depth_label}\n{s['content']}")
+
+    # Dream patterns (project-specific + global)
+    dream_ctx = _load_dream_patterns(working_dir)
+    if dream_ctx:
+        parts.append(f"## Dream Patterns (extracted from history)\n{dream_ctx}")
 
     if not parts:
         return ""

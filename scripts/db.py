@@ -73,6 +73,24 @@ CREATE INDEX IF NOT EXISTS idx_messages_unsummarised ON messages(summarised, tim
 CREATE INDEX IF NOT EXISTS idx_summaries_session  ON summaries(session_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_depth    ON summaries(depth);
 CREATE INDEX IF NOT EXISTS idx_summary_sources_id ON summary_sources(summary_id);
+
+CREATE TABLE IF NOT EXISTS dream_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_hash      TEXT NOT NULL,
+    scope             TEXT NOT NULL DEFAULT 'project',
+    dreamed_at        INTEGER NOT NULL,
+    patterns_found    INTEGER DEFAULT 0,
+    consolidations    INTEGER DEFAULT 0,
+    sessions_analyzed INTEGER DEFAULT 0,
+    report_path       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dream_log_project ON dream_log(project_hash);
+CREATE INDEX IF NOT EXISTS idx_dream_log_time ON dream_log(dreamed_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_working_dir
+    ON messages(working_dir, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_working_dir
+    ON sessions(working_dir, started_at);
 """
 
 FTS_SQL = """\
@@ -137,6 +155,15 @@ def get_db() -> sqlite3.Connection:
     _conn.executescript(SCHEMA_SQL)
     _conn.executescript(FTS_SQL)
     _conn.executescript(FTS_TRIGGERS_SQL)
+    # Migration: add consolidated column to summaries (idempotent)
+    try:
+        _conn.execute("ALTER TABLE summaries ADD COLUMN consolidated INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_summaries_depth_consolidated "
+        "ON summaries(depth, consolidated)"
+    )
     _conn.commit()
     return _conn
 
@@ -159,6 +186,11 @@ DEFAULT_CONFIG = {
     "depthThreshold": 10,
     "incrementalMaxDepth": -1,
     "workingDirFilter": None,
+    "autoDream": True,
+    "dreamAfterSessions": 5,
+    "dreamAfterHours": 24,
+    "dreamModel": "claude-haiku-4-5-20251001",
+    "dreamTokenBudget": 2000,
 }
 
 
@@ -432,3 +464,161 @@ def search_all(query: str, limit: int = 20) -> dict:
         "messages": search_messages(query, limit),
         "summaries": search_summaries(query, limit),
     }
+
+
+# ---------------------------------------------------------------------------
+# Dream
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib
+
+
+def project_hash(working_dir: str) -> str:
+    """Deterministic hash for a working directory path (SHA-256, 16 hex chars)."""
+    return _hashlib.sha256(os.path.abspath(working_dir).encode()).hexdigest()[:16]
+
+
+def get_last_dream(project_hash_val: str) -> Optional[dict]:
+    """Get the most recent dream_log entry for a project."""
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM dream_log WHERE project_hash = ? ORDER BY dreamed_at DESC LIMIT 1",
+        (project_hash_val,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_messages_since(timestamp: int, working_dir: str = None, limit: int = 5000) -> list[dict]:
+    """Get messages created after a given timestamp, optionally filtered by working_dir."""
+    db = get_db()
+    if working_dir:
+        rows = db.execute(
+            "SELECT * FROM messages WHERE timestamp > ? AND working_dir = ? ORDER BY timestamp LIMIT ?",
+            (timestamp, working_dir, limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp LIMIT ?",
+            (timestamp, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_summaries_since(timestamp: int, working_dir: str = None, limit: int = 2000) -> list[dict]:
+    """Get summaries created after a given timestamp, optionally filtered by project working_dir."""
+    db = get_db()
+    if working_dir:
+        rows = db.execute(
+            """SELECT s.* FROM summaries s
+               JOIN sessions sess ON s.session_id = sess.session_id
+               WHERE s.created_at > ? AND sess.working_dir = ?
+               ORDER BY s.created_at LIMIT ?""",
+            (timestamp, working_dir, limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT * FROM summaries WHERE created_at > ? ORDER BY created_at LIMIT ?",
+            (timestamp, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_overlapping_summaries(depth: int, threshold: float = 0.5) -> list[tuple[str, str]]:
+    """Find pairs of summaries at a given depth that share >threshold of their sources.
+
+    Uses a single bulk query instead of N+1 queries, then does pairwise comparison.
+    Returns list of (summary_id_a, summary_id_b) pairs.
+    """
+    db = get_db()
+    # Single bulk query: join summaries with their sources
+    rows = db.execute(
+        """SELECT ss.summary_id, ss.source_id
+           FROM summary_sources ss
+           JOIN summaries s ON s.id = ss.summary_id
+           WHERE s.depth = ? AND s.consolidated = 0""",
+        (depth,),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Build source sets in one pass
+    source_sets: dict[str, set[str]] = {}
+    for r in rows:
+        source_sets.setdefault(r["summary_id"], set()).add(r["source_id"])
+
+    if len(source_sets) < 2:
+        return []
+
+    # Find overlapping pairs
+    pairs = []
+    ids = list(source_sets.keys())
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = ids[i], ids[j]
+            sa, sb = source_sets[a], source_sets[b]
+            if not sa or not sb:
+                continue
+            overlap = len(sa & sb)
+            min_size = min(len(sa), len(sb))
+            if min_size > 0 and overlap / min_size > threshold:
+                pairs.append((a, b))
+
+    return pairs
+
+
+def store_dream_log(
+    project_hash_val: str,
+    scope: str,
+    patterns_found: int,
+    consolidations: int,
+    sessions_analyzed: int,
+    report_path: str = "",
+    dreamed_at: Optional[int] = None,
+) -> int:
+    """Record a dream cycle in the log. Returns the new row id."""
+    db = get_db()
+    now = dreamed_at if dreamed_at is not None else int(time.time())
+    cur = db.execute(
+        """INSERT INTO dream_log
+           (project_hash, scope, dreamed_at, patterns_found, consolidations,
+            sessions_analyzed, report_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (project_hash_val, scope, now, patterns_found, consolidations,
+         sessions_analyzed, report_path),
+    )
+    db.commit()
+    return cur.lastrowid
+
+
+def mark_consolidated(summary_ids: list[str]) -> None:
+    """Mark summaries as consolidated (without deleting them)."""
+    db = get_db()
+    db.executemany(
+        "UPDATE summaries SET consolidated = 1 WHERE id = ?",
+        [(sid,) for sid in summary_ids],
+    )
+    db.commit()
+
+
+def get_max_summary_depth() -> int:
+    """Return the maximum summary depth in the vault."""
+    db = get_db()
+    row = db.execute("SELECT COALESCE(MAX(depth), 0) FROM summaries").fetchone()
+    return row[0] if row else 0
+
+
+def count_sessions_since(timestamp: int, working_dir: str = None) -> int:
+    """Count sessions started after a given timestamp."""
+    db = get_db()
+    if working_dir:
+        row = db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE started_at > ? AND working_dir = ?",
+            (timestamp, working_dir),
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE started_at > ?",
+            (timestamp,),
+        ).fetchone()
+    return row[0] if row else 0

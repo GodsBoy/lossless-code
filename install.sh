@@ -17,6 +17,7 @@ echo ""
 
 mkdir -p "$LOSSLESS_HOME/scripts"
 mkdir -p "$LOSSLESS_HOME/mcp"
+mkdir -p "$LOSSLESS_HOME/dream/reports" "$LOSSLESS_HOME/dream/global" "$LOSSLESS_HOME/dream/projects"
 echo "  [ok] Created $LOSSLESS_HOME"
 
 # ── 2. Copy scripts ────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ chmod +x "$LOSSLESS_HOME/scripts/lcc"
 cp "$SCRIPT_DIR/scripts/hook_stop.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_session_start.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_store_message.py" "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/dream.py"             "$LOSSLESS_HOME/scripts/"
 echo "  [ok] Copied Python scripts to $LOSSLESS_HOME/scripts/"
 
 # ── 2b. Copy MCP server ──────────────────────────────────────────────────
@@ -39,7 +41,7 @@ echo "  [ok] Copied MCP server to $LOSSLESS_HOME/mcp/"
 
 # ── 3. Copy and chmod CLI wrappers ──────────────────────────────────────
 
-for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status; do
+for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status lcc_dream; do
     cp "$SCRIPT_DIR/scripts/$cmd" "$LOSSLESS_HOME/scripts/$cmd"
     chmod +x "$LOSSLESS_HOME/scripts/$cmd"
 done
@@ -71,7 +73,7 @@ done
 # Hooks run in non-login shells where .bashrc/.zshrc may not be sourced.
 
 mkdir -p "$HOME/.local/bin"
-for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status lcc; do
+for cmd in lcc_grep lcc_expand lcc_context lcc_sessions lcc_handoff lcc_status lcc_dream lcc; do
     ln -sf "$LOSSLESS_HOME/scripts/$cmd" /usr/local/bin/$cmd 2>/dev/null || \
     ln -sf "$LOSSLESS_HOME/scripts/$cmd" "$HOME/.local/bin/$cmd" 2>/dev/null || true
 done
@@ -292,7 +294,7 @@ sys.path.insert(0, '$LOSSLESS_HOME/scripts')
 import db
 conn = db.get_db()
 tables = [r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()]
-expected = ['sessions', 'messages', 'summaries', 'summary_sources', 'messages_fts', 'summaries_fts']
+expected = ['sessions', 'messages', 'summaries', 'summary_sources', 'messages_fts', 'summaries_fts', 'dream_log']
 missing = [t for t in expected if t not in tables]
 if missing:
     print(f'  [FAIL] Missing tables: {missing}')
@@ -309,7 +311,7 @@ python3 "$LOSSLESS_HOME/scripts/lcc.py" status
 echo ""
 echo "lossless-code installed successfully!"
 echo ""
-echo "Commands available: lcc, lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc-tui"
+echo "Commands available: lcc, lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc_dream, lcc-tui"
 echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
 echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact"
 echo ""

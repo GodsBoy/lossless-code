@@ -9,6 +9,11 @@ __pycache__/
 *.pyo
 .pytest_cache/
 TASK.md
+PROGRESS.md
+tasks/
+docs/solutions/
+docs/brainstorms/
+docs/plans/
 vault.db
 vault.db-shm
 vault.db-wal

@@ -20,6 +20,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+import dream as dream_mod
 import inject_context
 import summarise as summarise_mod
 
@@ -186,11 +187,27 @@ def cmd_status(args):
     vault_size = os.path.getsize(db.VAULT_DB) if db.VAULT_DB.exists() else 0
     vault_mb = vault_size / (1024 * 1024)
 
+    # Dream stats
+    dream_count = d.execute("SELECT COUNT(*) FROM dream_log").fetchone()[0]
+    last_dream_row = d.execute("SELECT dreamed_at FROM dream_log ORDER BY dreamed_at DESC LIMIT 1").fetchone()
+    last_dream = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_dream_row[0])) if last_dream_row else "never"
+    consolidated = d.execute("SELECT COUNT(*) FROM summaries WHERE consolidated = 1").fetchone()[0]
+
     print(f"lossless-code vault status")
     print(f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)")
     print(f"  Sessions:      {ses_count}")
     print(f"  Messages:      {msg_count} ({unsummarised} unsummarised)")
-    print(f"  Summaries:     {sum_count} (max depth: {max_depth})")
+    print(f"  Summaries:     {sum_count} (max depth: {max_depth}, {consolidated} consolidated)")
+    print(f"  Dreams:        {dream_count} (last: {last_dream})")
+
+
+def cmd_dream(args):
+    """Run dream cycle — extract patterns and consolidate DAG."""
+    scope = "global" if args.global_scope else "project"
+    working_dir = args.project or os.getcwd()
+    cfg = db.load_config()
+    report = dream_mod.run_dream(scope, working_dir, cfg)
+    print(report)
 
 
 def main():
@@ -239,6 +256,13 @@ def main():
     p_st = sub.add_parser("status", help="Vault statistics")
     p_st.set_defaults(func=cmd_status)
 
+    # dream
+    p_dream = sub.add_parser("dream", help="Run dream cycle — extract patterns and consolidate DAG")
+    p_dream.add_argument("--run", action="store_true", help="Execute dream now")
+    p_dream.add_argument("--project", help="Scope to specific working directory")
+    p_dream.add_argument("--global", action="store_true", dest="global_scope", help="Run global cross-project dream")
+    p_dream.set_defaults(func=cmd_dream)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -246,6 +270,10 @@ def main():
 
     if args.command == "summarise" and not args.run:
         print("Use --run to execute compaction. Example: lcc summarise --run")
+        return
+
+    if args.command == "dream" and not args.run:
+        print("Use --run to execute dream cycle. Example: lcc dream --run")
         return
 
     args.func(args)

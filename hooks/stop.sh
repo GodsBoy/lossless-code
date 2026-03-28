@@ -31,4 +31,12 @@ python3 "$SCRIPTS_DIR/hook_stop.py" \
     --transcript "$TRANSCRIPT_PATH" \
     2>/dev/null || true
 
+# --- Dream auto-trigger (background, non-blocking) ---
+SHOULD_DREAM=$(python3 "$SCRIPTS_DIR/dream.py" --check-trigger --cwd "$CWD" 2>/dev/null || echo "false")
+if [ "$SHOULD_DREAM" = "true" ]; then
+    nohup python3 "$SCRIPTS_DIR/dream.py" --run --project "$CWD" \
+        </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+fi
+
 exit 0

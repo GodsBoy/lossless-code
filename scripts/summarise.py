@@ -68,21 +68,15 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def call_summary_model(text: str, cfg: dict) -> str:
+def call_llm(prompt: str, cfg: dict) -> str:
     """
-    Call an LLM to produce a summary. Supports Anthropic and OpenAI providers.
+    Call an LLM with an arbitrary prompt. Supports Anthropic and OpenAI providers.
 
-    Falls back to a simple extractive summary if the API is unavailable.
+    Returns the model response text, or empty string if the API is unavailable.
+    This is the raw provider call — callers compose their own prompts.
     """
     provider = cfg.get("summaryProvider", "anthropic")
     model = cfg.get("summaryModel", "claude-haiku-4-5-20251001")
-
-    prompt = (
-        "Summarise the following conversation turns concisely, preserving all "
-        "key decisions, facts, file paths, commands, and outputs. Do not omit "
-        "anything actionable. Output ONLY the summary, no preamble.\n\n"
-        f"{text}"
-    )
 
     if provider == "openai":
         try:
@@ -111,6 +105,27 @@ def call_summary_model(text: str, cfg: dict) -> str:
             return response.content[0].text
         except Exception:
             pass
+
+    return ""
+
+
+def call_summary_model(text: str, cfg: dict) -> str:
+    """
+    Call an LLM to produce a summary of conversation turns.
+
+    Composes a summarisation prompt and delegates to call_llm().
+    Falls back to a simple extractive summary if the API is unavailable.
+    """
+    prompt = (
+        "Summarise the following conversation turns concisely, preserving all "
+        "key decisions, facts, file paths, commands, and outputs. Do not omit "
+        "anything actionable. Output ONLY the summary, no preamble.\n\n"
+        f"{text}"
+    )
+
+    result = call_llm(prompt, cfg)
+    if result:
+        return result
 
     # Fallback: extractive summary (take first line of each turn)
     lines = text.strip().split("\n")
