@@ -1,0 +1,4 @@
+#!/bin/bash
+# lcc_dream — run dream cycle: extract patterns and consolidate DAG
+SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+exec python3 "$SCRIPTS_DIR/lcc.py" dream "$@"
