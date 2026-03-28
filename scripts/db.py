@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS dream_log (
 );
 CREATE INDEX IF NOT EXISTS idx_dream_log_project ON dream_log(project_hash);
 CREATE INDEX IF NOT EXISTS idx_dream_log_time ON dream_log(dreamed_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_working_dir
+    ON messages(working_dir, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_working_dir
+    ON sessions(working_dir, started_at);
 """
 
 FTS_SQL = """\
@@ -153,8 +158,12 @@ def get_db() -> sqlite3.Connection:
     # Migration: add consolidated column to summaries (idempotent)
     try:
         _conn.execute("ALTER TABLE summaries ADD COLUMN consolidated INTEGER DEFAULT 0")
-    except Exception:
+    except sqlite3.OperationalError:
         pass  # Column already exists
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_summaries_depth_consolidated "
+        "ON summaries(depth, consolidated)"
+    )
     _conn.commit()
     return _conn
 
@@ -479,34 +488,37 @@ def get_last_dream(project_hash_val: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def get_messages_since(timestamp: int, working_dir: str = None) -> list[dict]:
+def get_messages_since(timestamp: int, working_dir: str = None, limit: int = 5000) -> list[dict]:
     """Get messages created after a given timestamp, optionally filtered by working_dir."""
     db = get_db()
     if working_dir:
         rows = db.execute(
-            "SELECT * FROM messages WHERE timestamp > ? AND working_dir = ? ORDER BY timestamp",
-            (timestamp, working_dir),
+            "SELECT * FROM messages WHERE timestamp > ? AND working_dir = ? ORDER BY timestamp LIMIT ?",
+            (timestamp, working_dir, limit),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp",
-            (timestamp,),
+            "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp LIMIT ?",
+            (timestamp, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_summaries_since(timestamp: int, session_id: str = None) -> list[dict]:
-    """Get summaries created after a given timestamp."""
+def get_summaries_since(timestamp: int, working_dir: str = None, limit: int = 2000) -> list[dict]:
+    """Get summaries created after a given timestamp, optionally filtered by project working_dir."""
     db = get_db()
-    if session_id:
+    if working_dir:
         rows = db.execute(
-            "SELECT * FROM summaries WHERE created_at > ? AND session_id = ? ORDER BY created_at",
-            (timestamp, session_id),
+            """SELECT s.* FROM summaries s
+               JOIN sessions sess ON s.session_id = sess.session_id
+               WHERE s.created_at > ? AND sess.working_dir = ?
+               ORDER BY s.created_at LIMIT ?""",
+            (timestamp, working_dir, limit),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT * FROM summaries WHERE created_at > ? ORDER BY created_at",
-            (timestamp,),
+            "SELECT * FROM summaries WHERE created_at > ? ORDER BY created_at LIMIT ?",
+            (timestamp, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -514,26 +526,29 @@ def get_summaries_since(timestamp: int, session_id: str = None) -> list[dict]:
 def get_overlapping_summaries(depth: int, threshold: float = 0.5) -> list[tuple[str, str]]:
     """Find pairs of summaries at a given depth that share >threshold of their sources.
 
+    Uses a single bulk query instead of N+1 queries, then does pairwise comparison.
     Returns list of (summary_id_a, summary_id_b) pairs.
     """
     db = get_db()
-    # Get all non-consolidated summaries at this depth
-    summaries = db.execute(
-        "SELECT id FROM summaries WHERE depth = ? AND consolidated = 0",
+    # Single bulk query: join summaries with their sources
+    rows = db.execute(
+        """SELECT ss.summary_id, ss.source_id
+           FROM summary_sources ss
+           JOIN summaries s ON s.id = ss.summary_id
+           WHERE s.depth = ? AND s.consolidated = 0""",
         (depth,),
     ).fetchall()
 
-    if len(summaries) < 2:
+    if not rows:
         return []
 
-    # Build source sets for each summary
+    # Build source sets in one pass
     source_sets: dict[str, set[str]] = {}
-    for s in summaries:
-        sid = s["id"]
-        sources = db.execute(
-            "SELECT source_id FROM summary_sources WHERE summary_id = ?", (sid,)
-        ).fetchall()
-        source_sets[sid] = {r["source_id"] for r in sources}
+    for r in rows:
+        source_sets.setdefault(r["summary_id"], set()).add(r["source_id"])
+
+    if len(source_sets) < 2:
+        return []
 
     # Find overlapping pairs
     pairs = []
@@ -584,6 +599,13 @@ def mark_consolidated(summary_ids: list[str]) -> None:
         [(sid,) for sid in summary_ids],
     )
     db.commit()
+
+
+def get_max_summary_depth() -> int:
+    """Return the maximum summary depth in the vault."""
+    db = get_db()
+    row = db.execute("SELECT COALESCE(MAX(depth), 0) FROM summaries").fetchone()
+    return row[0] if row else 0
 
 
 def count_sessions_since(timestamp: int, working_dir: str = None) -> int:

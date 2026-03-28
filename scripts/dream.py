@@ -7,14 +7,13 @@ anti-patterns, conventions, decisions), consolidates redundant DAG nodes,
 and generates dream reports. All operations are lossless — nothing is deleted.
 """
 
+import fcntl
 import json
 import logging
 import os
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,6 +37,18 @@ def _get_logger() -> logging.Logger:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
     return logger
+
+
+# ---------------------------------------------------------------------------
+# Dream model config helper
+# ---------------------------------------------------------------------------
+
+def _dream_llm_cfg(config: dict) -> dict:
+    """Build a config dict for call_llm using the dream-specific model."""
+    return {
+        "summaryProvider": config.get("summaryProvider", "anthropic"),
+        "summaryModel": config.get("dreamModel", config.get("summaryModel", "claude-haiku-4-5-20251001")),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +105,15 @@ def extract_patterns(
 ) -> list[dict]:
     """Extract recurring patterns from messages and summaries via LLM.
 
-    Returns list of pattern dicts: {category, description, source_ids, confidence}
+    Returns list of pattern dicts: {category, description, source_ids}
     """
     items = _format_for_pattern_extraction(messages, summaries)
     if not items:
         return []
 
-    # Build prompt with source IDs embedded
     chunk_size = config.get("chunkSize", 20)
     all_patterns = []
+    cfg = _dream_llm_cfg(config)
 
     for i in range(0, len(items), chunk_size):
         chunk = items[i:i + chunk_size]
@@ -111,16 +122,11 @@ def extract_patterns(
             text_parts.append(f"[{sid}] {text}")
         chunk_text = "\n\n".join(text_parts)
 
-        # Use dream-specific model if configured, otherwise fall back to summary model
-        dream_cfg = {
-            "summaryProvider": config.get("summaryProvider", "anthropic"),
-            "summaryModel": config.get("dreamModel", config.get("summaryModel", "claude-haiku-4-5-20251001")),
-        }
-
         full_prompt = PATTERN_PROMPT + chunk_text
-        response = summarise_mod.call_summary_model(full_prompt, dream_cfg)
-        patterns = _parse_pattern_response(response)
-        all_patterns.extend(patterns)
+        response = summarise_mod.call_llm(full_prompt, cfg)
+        if response:
+            patterns = _parse_pattern_response(response)
+            all_patterns.extend(patterns)
 
     # If LLM produced nothing useful, try extractive fallback
     if not all_patterns:
@@ -150,7 +156,6 @@ def _parse_pattern_response(response: str) -> list[dict]:
                     "category": cat,
                     "description": desc,
                     "source_ids": source_ids.strip(),
-                    "confidence": "medium",
                 })
                 break
     return patterns
@@ -159,36 +164,33 @@ def _parse_pattern_response(response: str) -> list[dict]:
 def _extractive_pattern_fallback(messages: list[dict]) -> list[dict]:
     """Heuristic pattern extraction when LLM is unavailable."""
     patterns = []
-    correction_keywords = ["don't", "no,", "wrong", "should be", "instead of", "not that"]
-    preference_keywords = ["always", "never", "prefer", "use", "avoid"]
+    correction_keywords = ["don't", "no,", "wrong", "should be", "instead of"]
+    preference_keywords = ["always", "never", "prefer", "avoid"]
 
     for m in messages:
-        content = m["content"].lower()
+        content_lower = m["content"].lower()
         source_id = f"msg:{m['id']}"
 
         for kw in correction_keywords:
-            if kw in content:
-                # Extract the sentence containing the keyword
+            if kw in content_lower:
                 for sentence in m["content"].split("."):
                     if kw in sentence.lower():
                         patterns.append({
                             "category": "CORRECTION",
                             "description": sentence.strip()[:200],
                             "source_ids": source_id,
-                            "confidence": "low",
                         })
                         break
                 break
 
         for kw in preference_keywords:
-            if kw in content and m["role"] == "user":
+            if kw in content_lower and m["role"] == "user":
                 for sentence in m["content"].split("."):
                     if kw in sentence.lower():
                         patterns.append({
                             "category": "PREFERENCE",
                             "description": sentence.strip()[:200],
                             "source_ids": source_id,
-                            "confidence": "low",
                         })
                         break
                 break
@@ -201,7 +203,7 @@ def _extractive_pattern_fallback(messages: list[dict]) -> list[dict]:
         if key not in seen:
             seen.add(key)
             unique.append(p)
-    return unique[:20]  # Cap at 20 extractive patterns
+    return unique[:20]
 
 
 # ---------------------------------------------------------------------------
@@ -211,25 +213,20 @@ def _extractive_pattern_fallback(messages: list[dict]) -> list[dict]:
 def consolidate_dag(config: dict) -> dict:
     """Find and merge redundant summaries at each depth level.
 
-    Returns {depth: {before: N, after: N, consolidated: N}} stats.
+    Returns {depth: {"consolidated": N}} stats.
     """
-    conn = db.get_db()
-    max_depth = conn.execute("SELECT COALESCE(MAX(depth), 0) FROM summaries").fetchone()[0]
-
+    max_depth = db.get_max_summary_depth()
     stats = {}
-    total_consolidated = 0
 
     for depth in range(max_depth + 1):
         pairs = db.get_overlapping_summaries(depth)
         if not pairs:
             continue
 
-        # Group overlapping pairs into clusters
         clusters = _cluster_overlapping(pairs)
         consolidated_in_depth = 0
 
         for cluster in clusters:
-            # Get the summaries in this cluster
             summaries_in_cluster = []
             for sid in cluster:
                 s = db.get_summary(sid)
@@ -239,7 +236,6 @@ def consolidate_dag(config: dict) -> dict:
             if len(summaries_in_cluster) < 2:
                 continue
 
-            # Merge via LLM
             merged_content = _merge_summaries(summaries_in_cluster, config)
             if not merged_content:
                 continue
@@ -255,7 +251,6 @@ def consolidate_dag(config: dict) -> dict:
                         seen_sources.add(key)
                         all_sources.append(key)
 
-            # Create new consolidated summary
             new_id = db.gen_summary_id()
             session_ids = set(s["session_id"] for s in summaries_in_cluster if s["session_id"])
             sid = session_ids.pop() if len(session_ids) == 1 else None
@@ -269,13 +264,11 @@ def consolidate_dag(config: dict) -> dict:
                 token_count=summarise_mod.estimate_tokens(merged_content),
             )
 
-            # Mark originals as consolidated
             db.mark_consolidated([s["id"] for s in summaries_in_cluster])
             consolidated_in_depth += len(summaries_in_cluster)
 
         if consolidated_in_depth > 0:
             stats[depth] = {"consolidated": consolidated_in_depth}
-            total_consolidated += consolidated_in_depth
 
     return stats
 
@@ -320,15 +313,10 @@ def _merge_summaries(summaries: list[dict], config: dict) -> str:
         f"{combined}"
     )
 
-    dream_cfg = {
-        "summaryProvider": config.get("summaryProvider", "anthropic"),
-        "summaryModel": config.get("dreamModel", config.get("summaryModel")),
-    }
+    result = summarise_mod.call_llm(prompt, _dream_llm_cfg(config))
 
-    result = summarise_mod.call_summary_model(prompt, dream_cfg)
-
-    # If result looks like extractive fallback (same as input), try simple dedup
-    if result == combined or not result.strip():
+    # If LLM returned nothing, fall back to dedup merge
+    if not result or result == combined:
         return _dedup_merge(texts)
 
     return result
@@ -365,10 +353,6 @@ def write_patterns(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "patterns.md"
-
-    # Update project map for discoverability
-    if scope != "global":
-        _update_project_map(project_hash_val, working_dir)
 
     # Group patterns by category
     by_category: dict[str, list[dict]] = {}
@@ -407,23 +391,6 @@ def write_patterns(
     return str(out_path)
 
 
-def _update_project_map(project_hash_val: str, working_dir: str) -> None:
-    """Update the hash-to-path mapping file for discoverability."""
-    map_path = DREAM_DIR / "projects" / "_project_map.json"
-    projects_dir = DREAM_DIR / "projects"
-    projects_dir.mkdir(parents=True, exist_ok=True)
-
-    mapping = {}
-    if map_path.exists():
-        try:
-            mapping = json.loads(map_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    mapping[project_hash_val] = os.path.abspath(working_dir)
-    map_path.write_text(json.dumps(mapping, indent=2))
-
-
 # ---------------------------------------------------------------------------
 # Dream report
 # ---------------------------------------------------------------------------
@@ -443,7 +410,6 @@ def generate_report(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     report_path = reports_dir / f"{timestamp}-dream.md"
 
-    # Count patterns by category
     by_cat = {}
     for p in patterns:
         by_cat[p["category"]] = by_cat.get(p["category"], 0) + 1
@@ -488,11 +454,21 @@ def check_auto_trigger(config: dict, working_dir: str) -> bool:
     if not config.get("autoDream", True):
         return False
 
+    # Check if another dream is already running
+    lock_path = DREAM_DIR / ".lock"
+    if lock_path.exists():
+        try:
+            lock_fd = open(lock_path, "r")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+        except (OSError, IOError):
+            return False  # Lock is held — another dream is running
+
     phash = db.project_hash(working_dir)
     last = db.get_last_dream(phash)
 
     if last is None:
-        # Never dreamed — check if there are enough sessions
         session_count = db.count_sessions_since(0, working_dir)
         return session_count >= config.get("dreamAfterSessions", 5)
 
@@ -519,6 +495,30 @@ def run_dream(scope: str, working_dir: str, config: dict) -> str:
     log = _get_logger()
     start_time = time.time()
 
+    # Acquire file lock to prevent concurrent dreams
+    lock_path = DREAM_DIR / ".lock"
+    DREAM_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        msg = "Another dream cycle is already running. Skipping."
+        log.info(msg)
+        lock_fd.close()
+        return msg
+
+    try:
+        return _run_dream_locked(scope, working_dir, config, log, start_time)
+    except Exception:
+        log.exception("Dream cycle failed")
+        return "Dream cycle failed — see dream.log for details."
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def _run_dream_locked(scope: str, working_dir: str, config: dict, log, start_time: float) -> str:
+    """Inner dream cycle, runs under file lock."""
     phash = db.project_hash(working_dir) if scope != "global" else "global"
     log.info(f"Dream cycle starting: scope={scope} dir={working_dir} hash={phash}")
 
@@ -536,11 +536,11 @@ def run_dream(scope: str, working_dir: str, config: dict) -> str:
         sessions_analyzed = db.count_sessions_since(since_ts)
     else:
         messages = db.get_messages_since(since_ts, working_dir)
-        summaries = db.get_summaries_since(since_ts)
+        summaries = db.get_summaries_since(since_ts, working_dir)
         sessions_analyzed = db.count_sessions_since(since_ts, working_dir)
 
     if not messages and not summaries:
-        msg = f"No new data since last dream. Nothing to dream about."
+        msg = "No new data since last dream. Nothing to dream about."
         log.info(msg)
         return msg
 
@@ -562,12 +562,6 @@ def run_dream(scope: str, working_dir: str, config: dict) -> str:
         pattern_path = write_patterns(patterns, phash, working_dir, scope)
         log.info(f"Patterns written to {pattern_path}")
 
-        # Also write global patterns if running per-project
-        if scope != "global":
-            global_patterns = [p for p in patterns if p["category"] in ("PREFERENCE", "CONVENTION")]
-            if global_patterns:
-                write_patterns(global_patterns, "global", working_dir, "global")
-
     # Phase 3: Generate report
     duration = time.time() - start_time
     report_path = generate_report(
@@ -576,7 +570,7 @@ def run_dream(scope: str, working_dir: str, config: dict) -> str:
     )
     log.info(f"Dream report written to {report_path}")
 
-    # Update dream log (only on success — if we got here, everything worked)
+    # Update dream log (only on success)
     db.store_dream_log(
         project_hash_val=phash,
         scope=scope,

@@ -88,7 +88,7 @@ class TestDreamEngine(unittest.TestCase):
         patterns = dream._extractive_pattern_fallback([])
         self.assertEqual(patterns, [])
 
-    @patch("dream.summarise_mod.call_summary_model")
+    @patch("dream.summarise_mod.call_llm")
     def test_extract_patterns_with_mock_llm(self, mock_llm):
         mock_llm.return_value = (
             "[CORRECTION] Use const instead of var. (Source: msg:1)\n"
@@ -105,8 +105,8 @@ class TestDreamEngine(unittest.TestCase):
 
     def test_write_patterns(self):
         patterns = [
-            {"category": "CORRECTION", "description": "Use const", "source_ids": "msg:1", "confidence": "high"},
-            {"category": "PREFERENCE", "description": "Use TS", "source_ids": "msg:2", "confidence": "medium"},
+            {"category": "CORRECTION", "description": "Use const", "source_ids": "msg:1", },
+            {"category": "PREFERENCE", "description": "Use TS", "source_ids": "msg:2", },
         ]
         phash = db.project_hash("/tmp/dreamproject")
         path = dream.write_patterns(patterns, phash, "/tmp/dreamproject", "project")
@@ -121,28 +121,17 @@ class TestDreamEngine(unittest.TestCase):
 
     def test_write_patterns_global(self):
         patterns = [
-            {"category": "CONVENTION", "description": "Use conventional commits", "source_ids": "", "confidence": "high"},
+            {"category": "CONVENTION", "description": "Use conventional commits", "source_ids": "", },
         ]
         path = dream.write_patterns(patterns, "global", "", "global")
         self.assertTrue(os.path.exists(path))
         content = open(path).read()
         self.assertIn("Conventions", content)
 
-    def test_project_map_updated(self):
-        phash = db.project_hash("/tmp/dreamproject")
-        dream.write_patterns(
-            [{"category": "DECISION", "description": "test", "source_ids": "", "confidence": "low"}],
-            phash, "/tmp/dreamproject", "project",
-        )
-        map_path = dream.DREAM_DIR / "projects" / "_project_map.json"
-        self.assertTrue(map_path.exists())
-        mapping = json.loads(map_path.read_text())
-        self.assertIn(phash, mapping)
-
     def test_generate_report(self):
         patterns = [
-            {"category": "CORRECTION", "description": "test", "source_ids": "", "confidence": "high"},
-            {"category": "PREFERENCE", "description": "test2", "source_ids": "", "confidence": "medium"},
+            {"category": "CORRECTION", "description": "test", "source_ids": "", },
+            {"category": "PREFERENCE", "description": "test2", "source_ids": "", },
         ]
         consolidation_stats = {0: {"consolidated": 3}}
         path = dream.generate_report(
@@ -191,7 +180,7 @@ class TestDreamEngine(unittest.TestCase):
         # Line two should appear only once
         self.assertEqual(result.count("Line two"), 1)
 
-    @patch("dream.summarise_mod.call_summary_model")
+    @patch("dream.summarise_mod.call_llm")
     @patch("dream.summarise_mod.run_full_summarisation")
     def test_run_dream_empty_vault(self, mock_summarise, mock_llm):
         mock_summarise.return_value = {"depth_0_created": 0, "cascaded_created": 0}
@@ -200,7 +189,7 @@ class TestDreamEngine(unittest.TestCase):
         result = dream.run_dream("project", "/tmp/empty-vault-xyz", config)
         self.assertIn("Nothing to dream about", result)
 
-    @patch("dream.summarise_mod.call_summary_model")
+    @patch("dream.summarise_mod.call_llm")
     @patch("dream.summarise_mod.run_full_summarisation")
     def test_run_dream_full_cycle(self, mock_summarise, mock_llm):
         mock_summarise.return_value = {"depth_0_created": 0, "cascaded_created": 0}
@@ -214,7 +203,7 @@ class TestDreamEngine(unittest.TestCase):
         self.assertIn("Patterns:", result)
         self.assertIn("Report:", result)
 
-    @patch("dream.summarise_mod.call_summary_model")
+    @patch("dream.summarise_mod.call_llm")
     @patch("dream.summarise_mod.run_full_summarisation")
     def test_run_dream_idempotent(self, mock_summarise, mock_llm):
         """Running dream twice with no new data should be a no-op."""
