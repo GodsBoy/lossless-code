@@ -379,6 +379,50 @@ lcc dream --run --project /path/to/project
 lcc dream --run --global
 ```
 
+### Semantic Search (v1.1.0+)
+
+Hybrid FTS5 + vector search, activated optionally. Default is FTS5-only — install nothing and the plugin behaves exactly as before.
+
+**Enable semantic search:**
+
+```bash
+# Install the optional embedding dependency
+pip install fastembed
+
+# Turn it on in ~/.lossless-code/config.json
+{"embeddingEnabled": true}
+
+# Index your existing vault (one-time backfill)
+lcc reindex --embeddings
+```
+
+**How it works:** New messages are embedded in the background after each session (same non-blocking pattern as dream auto-trigger). Queries combine FTS5 keyword results with vector cosine similarity using Reciprocal Rank Fusion (k=60). When hybrid search is active, `lcc grep` shows a `[hybrid]` tag on results.
+
+**Provider tiers:**
+- `fastembed` (default local): ONNX-based, no PyTorch, ~200 MB install. Default model: `BAAI/bge-small-en-v1.5`
+- `openai` / `anthropic`: API-based, higher quality. Set `embeddingProvider` in config and export the API key
+- Fallback: pure-Python numpy cosine similarity (no extra install, works for smaller vaults)
+- Always: FTS5-only if no provider installed
+
+**Config keys** (all optional, flat in `~/.lossless-code/config.json`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `embeddingEnabled` | `false` | Master switch |
+| `embeddingProvider` | `"local"` | `"local"`, `"openai"`, `"anthropic"` |
+| `embeddingModel` | `"BAAI/bge-small-en-v1.5"` | Model name passed to provider |
+| `ftsWeight` | `1.0` | RRF weight for FTS5 results |
+| `vectorWeight` | `1.0` | RRF weight for vector results |
+
+**Switching models:** Change `embeddingModel` and run `lcc reindex --embeddings --force` to re-embed with the new model.
+
+**Check status:**
+
+```bash
+lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
+             #       "Embeddings: 4,231 / 4,400 messages indexed (169 pending)"
+```
+
 ### Storage
 
 ```

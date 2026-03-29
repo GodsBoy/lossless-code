@@ -21,23 +21,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 import dream as dream_mod
+import embed as embed_mod
 import inject_context
 import summarise as summarise_mod
 
 
 def cmd_grep(args):
-    """Full-text search across messages and summaries."""
-    results = db.search_all(args.query, limit=args.limit)
+    """Full-text search across messages and summaries (hybrid when embedding active)."""
+    cfg = db.load_config()
+    results = embed_mod.hybrid_search(args.query, cfg, limit=args.limit)
 
     msgs = results["messages"]
     sums = results["summaries"]
+    is_hybrid = results.get("hybrid", False)
+    mode_tag = " [hybrid]" if is_hybrid else ""
 
     if not msgs and not sums:
         print(f"No results for: {args.query}")
         return
 
     if msgs:
-        print(f"=== Messages ({len(msgs)} matches) ===\n")
+        print(f"=== Messages ({len(msgs)} matches{mode_tag}) ===\n")
         for m in msgs:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["timestamp"]))
             role = m["role"]
@@ -193,12 +197,48 @@ def cmd_status(args):
     last_dream = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_dream_row[0])) if last_dream_row else "never"
     consolidated = d.execute("SELECT COUNT(*) FROM summaries WHERE consolidated = 1").fetchone()[0]
 
+    cfg = db.load_config()
+    # Vector search status
+    embed_enabled = cfg.get("embeddingEnabled", False)
+    embed_model = cfg.get("embeddingModel", "BAAI/bge-small-en-v1.5")
+    if embed_enabled:
+        provider = embed_mod.detect_provider(cfg)
+        cov = db.get_embedding_model_coverage(embed_model)
+        if provider and provider != "numpy":
+            vec_status = f"active ({provider}, {embed_model})"
+        else:
+            vec_status = f"inactive (no provider available — pip install lossless-code[embed])"
+        embed_line = (
+            f"  Embeddings:    {cov['embedded']:,} / {cov['total']:,} messages indexed"
+            f"  ({cov['pending']:,} pending)"
+        )
+    else:
+        vec_status = "inactive (embeddingEnabled: false)"
+        embed_line = None
+
     print(f"lossless-code vault status")
     print(f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)")
     print(f"  Sessions:      {ses_count}")
     print(f"  Messages:      {msg_count} ({unsummarised} unsummarised)")
     print(f"  Summaries:     {sum_count} (max depth: {max_depth}, {consolidated} consolidated)")
     print(f"  Dreams:        {dream_count} (last: {last_dream})")
+    print(f"  Vector search: {vec_status}")
+    if embed_line:
+        print(embed_line)
+
+
+def cmd_reindex(args):
+    """Embed un-indexed messages for hybrid search."""
+    cfg = db.load_config()
+    if args.model:
+        cfg = {**cfg, "embeddingModel": args.model}
+    if not cfg.get("embeddingEnabled", False) and not args.model:
+        print("Embedding is disabled. Set embeddingEnabled: true in config or pass --model.")
+        print("Config path:", db.CONFIG_PATH)
+        return
+    # Enable embedding temporarily for this run
+    cfg["embeddingEnabled"] = True
+    embed_mod.reindex_vault(cfg, force=args.force, model_override=args.model)
 
 
 def cmd_dream(args):
@@ -255,6 +295,13 @@ def main():
     # status
     p_st = sub.add_parser("status", help="Vault statistics")
     p_st.set_defaults(func=cmd_status)
+
+    # reindex
+    p_reindex = sub.add_parser("reindex", help="Embed un-indexed messages for hybrid search")
+    p_reindex.add_argument("--embeddings", action="store_true", help="Embed all un-indexed messages")
+    p_reindex.add_argument("--model", help="Override embeddingModel for this run")
+    p_reindex.add_argument("--force", action="store_true", help="Re-embed all messages even if already indexed")
+    p_reindex.set_defaults(func=cmd_reindex)
 
     # dream
     p_dream = sub.add_parser("dream", help="Run dream cycle — extract patterns and consolidate DAG")
