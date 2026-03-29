@@ -410,7 +410,8 @@ lcc dream --run --global
   "dreamAfterSessions": 5,
   "dreamAfterHours": 24,
   "dreamModel": "claude-haiku-4-5-20251001",
-  "dreamTokenBudget": 2000
+  "dreamTokenBudget": 2000,
+  "contextTokenBudget": 8000
 }
 ```
 
@@ -427,6 +428,7 @@ lcc dream --run --global
 | `dreamAfterHours` | `24` | Hours since last dream before auto-trigger |
 | `dreamModel` | `claude-haiku-4-5-20251001` | Model for dream pattern extraction |
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
+| `contextTokenBudget` | `8000` | Max tokens for total context injection on SessionStart (summaries + handoff + dreams) |
 
 ## Compaction Configuration
 
