@@ -39,4 +39,19 @@ if [ "$SHOULD_DREAM" = "true" ]; then
     disown 2>/dev/null || true
 fi
 
+# --- Embedding auto-index (background, non-blocking) ---
+EMBED_ENABLED=$(python3 -c "
+import sys, os
+sys.path.insert(0, '$SCRIPTS_DIR')
+import db
+cfg = db.load_config()
+print('true' if cfg.get('embeddingEnabled', False) else 'false')
+" 2>/dev/null || echo "false")
+if [ "$EMBED_ENABLED" = "true" ]; then
+    nohup python3 "$SCRIPTS_DIR/hook_embed.py" \
+        --session "$SESSION_ID" --dir "$CWD" \
+        </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+fi
+
 exit 0
