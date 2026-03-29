@@ -121,7 +121,16 @@ def build_context(
         return ""
 
     header = "# Lossless Context (auto-injected)\n"
-    return header + "\n\n".join(parts)
+    combined = header + "\n\n".join(parts)
+
+    # Respect contextTokenBudget to avoid blowing context on session start
+    config = db.load_config()
+    ctx_budget = config.get("contextTokenBudget", 8000)
+    max_chars = ctx_budget * 4  # ~4 chars per token
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n\n... [truncated to contextTokenBudget]"
+
+    return combined
 
 
 def main():
