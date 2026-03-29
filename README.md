@@ -2,6 +2,8 @@
 
 # 🧠 lossless-code
 
+[![SafeSkill 92/100](https://img.shields.io/badge/SafeSkill-92%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/godsboy-lossless-code)
+
 **DAG-based Lossless Context Management for Claude Code.**
 
 *Every message preserved forever. Summaries cascade, never delete. Full recall across sessions.*
