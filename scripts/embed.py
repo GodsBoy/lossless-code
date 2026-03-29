@@ -21,6 +21,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Module-level embedder cache — keyed by model name; populated on first use.
+# fastembed ONNX cold load costs 500ms-2s; this eliminates repeat loads.
+_fastembed_cache: dict[str, "TextEmbedding"] = {}
+
 # ---------------------------------------------------------------------------
 # Provider detection
 # ---------------------------------------------------------------------------
@@ -98,7 +102,9 @@ def embed_texts(texts: list[str], cfg: dict) -> list[Optional[list[float]]]:
 def _fastembed_embed(texts: list[str], model_name: str) -> list[Optional[list[float]]]:
     try:
         from fastembed import TextEmbedding
-        embedder = TextEmbedding(model_name=model_name)
+        if model_name not in _fastembed_cache:
+            _fastembed_cache[model_name] = TextEmbedding(model_name=model_name)
+        embedder = _fastembed_cache[model_name]
         results = []
         for vec in embedder.embed(texts):
             results.append([float(v) for v in vec])
