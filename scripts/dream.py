@@ -614,6 +614,51 @@ if __name__ == "__main__":
         cfg = db.load_config()
         result = run_dream(scope, project, cfg)
         print(result)
+    elif "--status" in sys.argv:
+        project = os.getcwd()
+        if "--project" in sys.argv:
+            idx = sys.argv.index("--project")
+            if idx + 1 < len(sys.argv):
+                project = sys.argv[idx + 1]
+        cfg = db.load_config()
+        phash = db.project_hash(project)
+        last = db.get_last_dream(phash)
+
+        print("=== Dream Status ===")
+        print(f"Project: {project}")
+        print(f"Auto-dream: {'enabled' if cfg.get('autoDream', True) else 'disabled'}")
+        print(f"Trigger: every {cfg.get('dreamAfterSessions', 5)} sessions or {cfg.get('dreamAfterHours', 24)}h")
+        print(f"Model: {cfg.get('dreamModel', 'not set')}")
+        print()
+
+        if last:
+            from datetime import datetime, timezone
+            ts = datetime.fromtimestamp(last["dreamed_at"], tz=timezone.utc)
+            hours_ago = (int(time.time()) - last["dreamed_at"]) / 3600
+            print(f"Last dream: {ts.strftime('%Y-%m-%d %H:%M UTC')} ({hours_ago:.1f}h ago)")
+            print(f"  Patterns found: {last.get('patterns_found', 0)}")
+            print(f"  Consolidations: {last.get('consolidations', 0)}")
+            print(f"  Sessions analysed: {last.get('sessions_analyzed', 0)}")
+            if last.get("report_path"):
+                print(f"  Report: {last['report_path']}")
+        else:
+            print("Last dream: never")
+
+        # Count total dreams
+        conn = db.get_db()
+        total = conn.execute(
+            "SELECT COUNT(*) FROM dream_log WHERE project_hash = ?", (phash,)
+        ).fetchone()[0]
+        print(f"\nTotal dreams: {total}")
+
+        # Is dream due?
+        due = check_auto_trigger(cfg, project)
+        sessions_since = db.count_sessions_since(
+            last["dreamed_at"] if last else 0, project
+        )
+        print(f"Sessions since last: {sessions_since}")
+        print(f"Dream due: {'yes' if due else 'no'}")
     else:
         print("Usage: dream.py --run [--project DIR] [--global]")
         print("       dream.py --check-trigger [--cwd DIR]")
+        print("       dream.py --status [--project DIR]")
