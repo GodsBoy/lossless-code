@@ -204,6 +204,7 @@ def close_db() -> None:
 DEFAULT_CONFIG = {
     "summaryModel": "claude-haiku-4-5-20251001",
     "summaryProvider": "anthropic",
+    "anthropicBaseUrl": None,
     "chunkSize": 20,
     "depthThreshold": 10,
     "incrementalMaxDepth": -1,

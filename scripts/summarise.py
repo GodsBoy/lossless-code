@@ -96,13 +96,20 @@ def call_llm(prompt: str, cfg: dict) -> str:
             import anthropic
 
             auth = _get_anthropic_auth()
+            base_url = cfg.get("anthropicBaseUrl") or os.environ.get("ANTHROPIC_BASE_URL")
+            if base_url:
+                auth["base_url"] = base_url
             client = anthropic.Anthropic(**auth)
             response = client.messages.create(
                 model=model,
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
+            # Handle reasoning models that return ThinkingBlock + TextBlock
+            for block in response.content:
+                if hasattr(block, "text"):
+                    return block.text
+            return ""
         except Exception:
             pass
 

@@ -446,6 +446,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 {
   "summaryModel": "claude-haiku-4-5-20251001",
   "summaryProvider": "anthropic",
+  "anthropicBaseUrl": null,
   "chunkSize": 20,
   "depthThreshold": 10,
   "incrementalMaxDepth": -1,
@@ -463,6 +464,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 |-----|---------|-------------|
 | `summaryModel` | `claude-haiku-4-5-20251001` | Model for compactions |
 | `summaryProvider` | `anthropic` | LLM provider: `anthropic` or `openai` |
+| `anthropicBaseUrl` | `null` | Custom Anthropic-compatible API endpoint (overrides `ANTHROPIC_BASE_URL` env) |
 | `chunkSize` | `20` | Messages per compaction chunk |
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
 | `incrementalMaxDepth` | `-1` | Max cascade depth (-1 = unlimited) |
@@ -517,12 +519,33 @@ Model examples: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`
 
 You can use any model your provider supports. These are just common choices.
 
+**Custom Anthropic-compatible endpoints**
+
+Any provider that exposes an Anthropic Messages API endpoint works (e.g. MiniMax, Cloudflare AI Gateway, custom proxies). Set `anthropicBaseUrl` in config (or `ANTHROPIC_BASE_URL` env var) and provide the provider's API key via `ANTHROPIC_API_KEY`.
+
+```json
+{
+  "summaryProvider": "anthropic",
+  "summaryModel": "MiniMax-M2.7",
+  "anthropicBaseUrl": "https://api.minimax.io/anthropic"
+}
+```
+
+```bash
+export ANTHROPIC_API_KEY="your-minimax-api-key"
+```
+
+Reasoning models that return `ThinkingBlock` responses are handled automatically.
+
+Model examples: `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`
+
 ### Cost Comparison
 
 | Model | Input cost (per 1M tokens) |
 |-------|---------------------------|
 | `gpt-4.1-nano` | ~$0.10 |
 | `gpt-4o-mini` | ~$0.15 |
+| `MiniMax-M2.7` | ~$0.30 |
 | `gpt-4.1-mini` | ~$0.40 |
 | `claude-haiku-4-5-20251001` | ~$0.80 |
 | `claude-sonnet-4-20250514` | ~$3.00 |
