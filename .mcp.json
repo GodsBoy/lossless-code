@@ -2,7 +2,7 @@
   "mcpServers": {
     "lossless-code": {
       "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/start.sh"]
+      "args": ["${CLAUDE_PLUGIN_ROOT:-.}/mcp/start.sh"]
     }
   }
 }
