@@ -133,6 +133,35 @@ def _get_anthropic_auth() -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Model capability map (R8)
+# ---------------------------------------------------------------------------
+
+MODEL_CONTEXT_WINDOWS = {
+    "claude-haiku": 200_000,
+    "claude-sonnet": 200_000,
+    "claude-opus": 200_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4o": 128_000,
+    "gpt-4.1-mini": 1_000_000,
+    "gpt-4.1-nano": 1_000_000,
+    "gpt-4.1": 1_000_000,
+    "llama3": 8_192,
+    "mistral": 32_000,
+    "MiniMax": 1_000_000,
+}
+
+
+def _get_context_window(model: str) -> int:
+    """Return context window size for a model. Defaults to 8192 for unknown models."""
+    if not model:
+        return 8192
+    for prefix, size in MODEL_CONTEXT_WINDOWS.items():
+        if model.startswith(prefix):
+            return size
+    return 8192
+
+
 def estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token."""
     return max(1, len(text) // 4)
@@ -258,6 +287,55 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
     return ""
 
 
+def _extractive_summary(text: str) -> str:
+    """TF-IDF sentence scoring for extractive summarisation (stdlib only)."""
+    import math
+    import re
+    from collections import Counter
+
+    # Split into sentences (simple heuristic)
+    sentences = re.split(r'(?<=[.!?])\s+|\n\n+|\n(?=\[)', text.strip())
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+
+    if len(sentences) <= 5:
+        return "\n".join(sentences)
+
+    # Tokenize: lowercase alphanumeric words
+    def tokenize(s):
+        return re.findall(r'[a-z0-9_./]+', s.lower())
+
+    # Compute term frequency per sentence
+    sentence_tfs = []
+    for s in sentences:
+        tokens = tokenize(s)
+        sentence_tfs.append(Counter(tokens))
+
+    # Compute document frequency (how many sentences contain each term)
+    df = Counter()
+    for tf in sentence_tfs:
+        for term in tf:
+            df[term] += 1
+
+    n = len(sentences)
+    # Score each sentence by sum of TF-IDF weights
+    scores = []
+    for i, tf in enumerate(sentence_tfs):
+        score = 0.0
+        for term, count in tf.items():
+            idf = math.log((n + 1) / (df[term] + 1)) + 1
+            score += count * idf
+        # Boost sentences with decision/action keywords
+        s_lower = sentences[i].lower()
+        if any(kw in s_lower for kw in ("decided", "decision", "created", "fixed", "error", "changed")):
+            score *= 1.3
+        scores.append((score, i))
+
+    # Select top-K sentences, preserving original order
+    k = min(max(5, len(sentences) // 3), 15)
+    top_indices = sorted([idx for _, idx in sorted(scores, reverse=True)[:k]])
+    return "\n".join(sentences[i] for i in top_indices)
+
+
 def call_summary_model(text: str, cfg: dict) -> str:
     """
     Call an LLM to produce a summary of conversation turns.
@@ -284,36 +362,21 @@ def call_summary_model(text: str, cfg: dict) -> str:
         "Run 'lcc status' for details.", provider, model
     )
 
-    # Fallback: extractive summary (take first line of each turn)
-    lines = text.strip().split("\n")
-    kept = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and (
-            stripped.startswith("user:")
-            or stripped.startswith("assistant:")
-            or stripped.startswith("[")
-            or "decision" in stripped.lower()
-            or "created" in stripped.lower()
-            or "error" in stripped.lower()
-            or "fixed" in stripped.lower()
-        ):
-            kept.append(stripped)
-    if not kept:
-        # Just take first and last few lines
-        kept = lines[:5] + (["..."] if len(lines) > 10 else []) + lines[-5:]
-    return "\n".join(kept)
+    # Fallback: TF-IDF sentence scoring (stdlib only, R9)
+    return _extractive_summary(text)
 
 
-def format_messages_for_summary(messages: list[dict]) -> str:
+def format_messages_for_summary(messages: list[dict], model: str = None) -> str:
     """Format a chunk of messages into a text block for summarisation."""
+    ctx_window = _get_context_window(model) if model else 8192
+    # Only truncate individual messages for small-context models
+    max_msg_chars = 4000 if ctx_window < 32_000 else 20_000
     parts = []
     for m in messages:
         role = m["role"]
         content = m["content"]
-        # Truncate very long messages to avoid blowing up the summary prompt
-        if len(content) > 4000:
-            content = content[:3800] + "\n... [truncated]"
+        if len(content) > max_msg_chars:
+            content = content[:max_msg_chars - 200] + "\n... [truncated]"
         prefix = f"[{role}]"
         if m.get("tool_name"):
             prefix = f"[{role}:{m['tool_name']}]"

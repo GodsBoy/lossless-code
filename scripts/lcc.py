@@ -151,8 +151,12 @@ def cmd_handoff(args):
             print("No messages in this session to generate handoff from.")
             return
 
-        # Build handoff text
+        # Build handoff text (use handoffModel if set, fallback to summaryModel)
         cfg = db.load_config()
+        handoff_cfg = dict(cfg)
+        handoff_model = cfg.get("handoffModel")
+        if handoff_model:
+            handoff_cfg["summaryModel"] = handoff_model
         text = summarise_mod.format_messages_for_summary(messages)
         prompt_text = (
             "Generate a concise handoff summary for the next coding session. "
@@ -160,7 +164,7 @@ def cmd_handoff(args):
             "what needs to happen next. Be specific with file paths and commands.\n\n"
             f"{text}"
         )
-        handoff_text = summarise_mod.call_summary_model(prompt_text, cfg)
+        handoff_text = summarise_mod.call_summary_model(prompt_text, handoff_cfg)
         db.set_handoff(session_id, handoff_text)
         print(f"Handoff generated and saved for session {session_id[:16]}...")
         print(f"\n{handoff_text}")

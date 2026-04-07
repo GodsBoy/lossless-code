@@ -61,6 +61,22 @@ PATTERN_PROMPT = """\
 Analyze the following conversation history and extract recurring patterns.
 Categorize each pattern as one of: CORRECTION, PREFERENCE, ANTI_PATTERN, CONVENTION, DECISION.
 
+Return your response as a JSON object with this schema:
+{"patterns": [{"category": "CORRECTION", "description": "...", "sources": ["msg:123", "sum_abc"]}]}
+
+Rules:
+- Only extract patterns that appear in 2+ instances or have strong evidence
+- Keep descriptions to 1-2 sentences
+- Preserve source IDs exactly as provided
+- Output ONLY valid JSON, no preamble or commentary
+
+Conversation history:
+"""
+
+PATTERN_PROMPT_TEXT = """\
+Analyze the following conversation history and extract recurring patterns.
+Categorize each pattern as one of: CORRECTION, PREFERENCE, ANTI_PATTERN, CONVENTION, DECISION.
+
 For each pattern, output a line in this exact format:
 [CATEGORY] Pattern description. (Source: {source_ids})
 
@@ -124,10 +140,17 @@ def extract_patterns(
             text_parts.append(f"[{sid}] {text}")
         chunk_text = "\n\n".join(text_parts)
 
+        # Try JSON mode first, fall back to text parsing
         full_prompt = PATTERN_PROMPT + chunk_text
-        response = summarise_mod.call_llm(full_prompt, cfg)
+        response = summarise_mod.call_llm(full_prompt, cfg, json_mode=True)
         if response:
-            patterns = _parse_pattern_response(response)
+            patterns = _parse_patterns_json(response)
+            if not patterns:
+                # JSON parsing failed — retry with text prompt (no json_mode)
+                full_prompt_text = PATTERN_PROMPT_TEXT + chunk_text
+                response = summarise_mod.call_llm(full_prompt_text, cfg)
+                if response:
+                    patterns = _parse_pattern_response(response)
             all_patterns.extend(patterns)
 
     # If LLM produced nothing useful, try extractive fallback
@@ -135,6 +158,26 @@ def extract_patterns(
         all_patterns = _extractive_pattern_fallback(messages)
 
     return all_patterns
+
+
+def _parse_patterns_json(response: str) -> list[dict]:
+    """Parse JSON-mode LLM response into pattern dicts."""
+    try:
+        data = json.loads(response)
+        patterns = []
+        for p in data.get("patterns", []):
+            cat = p.get("category", "").upper()
+            if cat not in PATTERN_CATEGORIES:
+                continue
+            sources = p.get("sources", [])
+            patterns.append({
+                "category": cat,
+                "description": p.get("description", ""),
+                "source_ids": ", ".join(sources) if isinstance(sources, list) else str(sources),
+            })
+        return patterns
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return []
 
 
 def _parse_pattern_response(response: str) -> list[dict]:
