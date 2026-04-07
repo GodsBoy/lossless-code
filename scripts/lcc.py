@@ -151,8 +151,12 @@ def cmd_handoff(args):
             print("No messages in this session to generate handoff from.")
             return
 
-        # Build handoff text
+        # Build handoff text (use handoffModel if set, fallback to summaryModel)
         cfg = db.load_config()
+        handoff_cfg = dict(cfg)
+        handoff_model = cfg.get("handoffModel")
+        if handoff_model:
+            handoff_cfg["summaryModel"] = handoff_model
         text = summarise_mod.format_messages_for_summary(messages)
         prompt_text = (
             "Generate a concise handoff summary for the next coding session. "
@@ -160,7 +164,7 @@ def cmd_handoff(args):
             "what needs to happen next. Be specific with file paths and commands.\n\n"
             f"{text}"
         )
-        handoff_text = summarise_mod.call_summary_model(prompt_text, cfg)
+        handoff_text = summarise_mod.call_summary_model(prompt_text, handoff_cfg)
         db.set_handoff(session_id, handoff_text)
         print(f"Handoff generated and saved for session {session_id[:16]}...")
         print(f"\n{handoff_text}")
@@ -225,6 +229,28 @@ def cmd_status(args):
     print(f"  Vector search: {vec_status}")
     if embed_line:
         print(embed_line)
+
+    # Provider info (R5)
+    pinfo = summarise_mod.get_provider_info()
+    p_name = pinfo.get("provider") or "none"
+    p_model = pinfo.get("model") or "none"
+    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
+    p_err = pinfo.get("last_error")
+    if p_err:
+        err_time = pinfo.get("last_error_time")
+        if err_time:
+            ago = int(time.time() - err_time)
+            if ago < 3600:
+                err_ago = f"{ago // 60}m ago"
+            else:
+                err_ago = f"{ago // 3600}h ago"
+        else:
+            err_ago = "unknown"
+        err_str = f"{p_err} {err_ago}"
+    else:
+        err_str = "none"
+    print(f"  Provider:      {p_name} ({p_model}){p_suffix}")
+    print(f"               Last error: {err_str}")
 
 
 def cmd_reindex(args):

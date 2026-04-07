@@ -203,8 +203,9 @@ def close_db() -> None:
 
 DEFAULT_CONFIG = {
     "summaryModel": "claude-haiku-4-5-20251001",
-    "summaryProvider": "anthropic",
+    "summaryProvider": None,  # None = auto-detect from environment
     "anthropicBaseUrl": None,
+    "openaiBaseUrl": None,
     "chunkSize": 20,
     "depthThreshold": 10,
     "incrementalMaxDepth": -1,
@@ -213,6 +214,7 @@ DEFAULT_CONFIG = {
     "dreamAfterSessions": 5,
     "dreamAfterHours": 24,
     "dreamModel": "claude-haiku-4-5-20251001",
+    "handoffModel": None,  # Falls back to summaryModel
     "dreamTokenBudget": 2000,
     # Semantic search (Phase 2)
     "embeddingEnabled": False,
@@ -230,8 +232,18 @@ def load_config() -> dict:
         with open(CONFIG_PATH) as f:
             user_cfg = json.load(f)
         merged = {**DEFAULT_CONFIG, **user_cfg}
-        return merged
-    return dict(DEFAULT_CONFIG)
+    else:
+        merged = dict(DEFAULT_CONFIG)
+    # Env var overrides (highest priority)
+    for env_key, cfg_key in [
+        ("LOSSLESS_SUMMARY_PROVIDER", "summaryProvider"),
+        ("LOSSLESS_SUMMARY_MODEL", "summaryModel"),
+        ("LOSSLESS_DREAM_MODEL", "dreamModel"),
+    ]:
+        val = os.environ.get(env_key)
+        if val:
+            merged[cfg_key] = val
+    return merged
 
 
 def save_config(cfg: dict) -> None:
