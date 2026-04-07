@@ -510,29 +510,39 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 
 ## Compaction Configuration
 
-lossless-code **auto-detects your LLM provider** from environment variables. No configuration needed for most setups — just have your API key set and it works.
+lossless-code **auto-detects your LLM provider** from environment. No configuration needed for most setups — if you have Claude Code installed, it just works.
 
 ### Auto-Detection (default)
 
 When `summaryProvider` is `null` (the default), lossless-code checks in priority order:
 
-1. `ANTHROPIC_API_KEY` -> uses Anthropic
-2. Claude Code OAuth token from `~/.claude/.credentials.json` -> uses Anthropic via proxy
+1. `claude` CLI on PATH -> uses Claude CLI (works with Max/Pro subscriptions, $0)
+2. `ANTHROPIC_API_KEY` -> uses Anthropic API directly
 3. `OPENAI_API_KEY` -> uses OpenAI
 4. `openaiBaseUrl` set -> uses OpenAI-compatible endpoint (Ollama, etc.)
 5. Nothing found -> uses extractive fallback (no API needed, lower quality)
 
 ### Supported Providers
 
+**Claude CLI (Claude Max/Pro subscription — $0)**
+
+If you have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, lossless-code uses it automatically. No API key needed — your existing subscription covers all LLM calls.
+
+This is the highest-priority auto-detection option. If `claude` is on your PATH, it will be used unless you explicitly set `summaryProvider` to something else.
+
+```json
+{ "summaryProvider": "claude-cli", "summaryModel": "claude-haiku-4-5-20251001" }
+```
+
+Model examples: any model your subscription supports (`claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`)
+
+> **Note:** Each LLM call spawns a `claude --print` subprocess, which adds ~2-5s overhead per call compared to direct API access. For most users this is invisible (summarisation runs in hooks), but heavy users may prefer a direct API key for faster throughput.
+
 **Anthropic**
 
-Authentication is resolved automatically from multiple sources (in priority order):
+Set `ANTHROPIC_API_KEY` in your environment. Get a key from [console.anthropic.com](https://console.anthropic.com).
 
-1. `ANTHROPIC_API_KEY` environment variable (standard API key)
-2. Claude Code OAuth token from `~/.claude/.credentials.json` (setup-token)
-3. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
-
-> **Note:** OAuth/setup-tokens require `ANTHROPIC_BASE_URL` pointing to a compatible proxy (e.g. OpenClaw), since `api.anthropic.com` does not accept OAuth tokens directly. If you only have a setup-token and no proxy, use the OpenAI provider instead.
+> **Tip:** If you have a Claude Max/Pro subscription and don't want to manage a separate API key, use the Claude CLI provider above instead.
 
 ```json
 { "summaryProvider": "anthropic", "summaryModel": "claude-haiku-4-5-20251001" }
@@ -622,22 +632,23 @@ When no LLM provider is available, lossless-code uses TF-IDF sentence scoring to
 
 | Model | Input cost (per 1M tokens) |
 |-------|---------------------------|
+| Claude CLI (Max/Pro subscription) | $0 (included) |
 | Ollama / local models | $0 |
 | Extractive fallback (no API) | $0 |
 | `gpt-4.1-nano` | ~$0.10 |
 | `gpt-4o-mini` | ~$0.15 |
 | `MiniMax-M2.7` | ~$0.30 |
 | `gpt-4.1-mini` | ~$0.40 |
-| `claude-haiku-4-5-20251001` | ~$0.80 |
-| `claude-sonnet-4-20250514` | ~$3.00 |
+| `claude-haiku-4-5-20251001` (API) | ~$0.80 |
+| `claude-sonnet-4-20250514` (API) | ~$3.00 |
 
 ### Estimated Monthly Costs
 
-| Usage | Ollama (free) | gpt-4.1-nano | gpt-4.1-mini | claude-haiku |
-|-------|--------------|-------------|-------------|-------------|
-| Light (1-2 sessions/day) | $0 | $0.20-0.60 | $1-3 | $2-6 |
-| Moderate (3-5 sessions/day) | $0 | $0.60-1.50 | $3-7 | $6-14 |
-| Heavy (10+ sessions/day) | $0 | $1.50-3.00 | $7-15 | $14-30 |
+| Usage | Claude CLI (Max/Pro) | Ollama (free) | gpt-4.1-nano | gpt-4.1-mini | claude-haiku (API) |
+|-------|---------------------|--------------|-------------|-------------|-------------------|
+| Light (1-2 sessions/day) | $0 | $0 | $0.20-0.60 | $1-3 | $2-6 |
+| Moderate (3-5 sessions/day) | $0 | $0 | $0.60-1.50 | $3-7 | $6-14 |
+| Heavy (10+ sessions/day) | $0 | $0 | $1.50-3.00 | $7-15 | $14-30 |
 
 Compactions are triggered automatically before context compaction (PreCompact hook) and at session end (Stop hook). The extractive fallback runs automatically when no API key is configured: no hard dependency on any LLM provider.
 

@@ -30,50 +30,60 @@ class TestAutoDetection(unittest.TestCase):
         db.CONFIG_PATH = db.VAULT_DIR / "config.json"
         db.get_db()
 
+    def setUp(self):
+        # Reset cached CLI path between tests
+        summarise._claude_cli_checked = False
+        summarise._claude_cli_path = None
+
     def _cfg(self, **overrides):
         base = dict(db.DEFAULT_CONFIG)
         base.update(overrides)
         return base
 
+    @patch("scripts.summarise.shutil.which", return_value=None)
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False)
-    def test_detect_anthropic_from_env(self):
+    def test_detect_anthropic_from_env(self, _mock_which):
         provider, model = summarise._detect_provider(self._cfg())
         self.assertEqual(provider, "anthropic")
         self.assertIn("claude", model)
 
+    @patch("scripts.summarise.shutil.which", return_value=None)
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai"}, clear=False)
-    @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_detect_openai_from_env(self, _mock_open):
-        # Remove ANTHROPIC_API_KEY to test OpenAI fallback
+    def test_detect_openai_from_env(self, _mock_which):
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         with patch.dict(os.environ, {**env, "OPENAI_API_KEY": "sk-openai"}, clear=True):
             provider, model = summarise._detect_provider(self._cfg())
             self.assertEqual(provider, "openai")
 
-    @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_detect_none_when_no_keys(self, _mock_open):
+    @patch("scripts.summarise.shutil.which", return_value=None)
+    def test_detect_none_when_no_keys(self, _mock_which):
         env = {k: v for k, v in os.environ.items()
-               if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-                            "CLAUDE_CODE_OAUTH_TOKEN", "OLLAMA_HOST")}
+               if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL")}
         with patch.dict(os.environ, env, clear=True):
             provider, model = summarise._detect_provider(self._cfg(openaiBaseUrl=None))
             self.assertIsNone(provider)
             self.assertIsNone(model)
 
-    @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_detect_openai_from_base_url(self, _mock_open):
+    @patch("scripts.summarise.shutil.which", return_value=None)
+    def test_detect_openai_from_base_url(self, _mock_which):
         env = {k: v for k, v in os.environ.items()
-               if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-                            "CLAUDE_CODE_OAUTH_TOKEN")}
+               if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
         with patch.dict(os.environ, env, clear=True):
             cfg = self._cfg(openaiBaseUrl="http://localhost:11434/v1")
             provider, model = summarise._detect_provider(cfg)
             self.assertEqual(provider, "openai")
 
+    @patch("scripts.summarise.shutil.which", return_value=None)
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test", "OPENAI_API_KEY": "sk-openai"}, clear=False)
-    def test_anthropic_takes_priority_over_openai(self):
+    def test_anthropic_takes_priority_over_openai(self, _mock_which):
         provider, _ = summarise._detect_provider(self._cfg())
         self.assertEqual(provider, "anthropic")
+
+    @patch("scripts.summarise.shutil.which", return_value="/usr/bin/claude")
+    def test_claude_cli_takes_priority(self, _mock_which):
+        provider, model = summarise._detect_provider(self._cfg())
+        self.assertEqual(provider, "claude-cli")
+        self.assertIn("claude", model)
 
 
 class TestEnvVarOverrides(unittest.TestCase):
@@ -112,7 +122,8 @@ class TestCallLlm(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def test_returns_empty_when_no_provider(self):
+    @patch("scripts.summarise.shutil.which", return_value=None)
+    def test_returns_empty_when_no_provider(self, _mock_which):
         env = {k: v for k, v in os.environ.items()
                if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
                             "CLAUDE_CODE_OAUTH_TOKEN", "OLLAMA_HOST")}
@@ -156,6 +167,30 @@ class TestCallLlm(unittest.TestCase):
         """Test that json_mode parameter is accepted without error."""
         cfg = self._cfg(summaryProvider="local")
         result = summarise.call_llm("test", cfg, json_mode=True)
+        self.assertEqual(result, "")
+
+    @patch("scripts.summarise.subprocess.run")
+    def test_claude_cli_returns_response(self, mock_run):
+        """Test claude-cli provider routes through subprocess and returns output."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="Summary text\n", stderr="")
+        result = summarise.call_llm("test prompt", self._cfg(summaryProvider="claude-cli"))
+        self.assertEqual(result, "Summary text")
+        mock_run.assert_called_once()
+        call_env = mock_run.call_args.kwargs["env"]
+        self.assertNotIn("ANTHROPIC_API_KEY", call_env)
+
+    @patch("scripts.summarise.subprocess.run")
+    def test_claude_cli_timeout_returns_empty(self, mock_run):
+        """Test claude-cli returns empty string on subprocess timeout."""
+        mock_run.side_effect = summarise.subprocess.TimeoutExpired("claude", 120)
+        result = summarise.call_llm("test", self._cfg(summaryProvider="claude-cli"))
+        self.assertEqual(result, "")
+
+    @patch("scripts.summarise.subprocess.run")
+    def test_claude_cli_error_returns_empty(self, mock_run):
+        """Test claude-cli returns empty string on non-zero exit code."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Auth error")
+        result = summarise.call_llm("test", self._cfg(summaryProvider="claude-cli"))
         self.assertEqual(result, "")
 
 

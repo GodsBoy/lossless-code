@@ -8,10 +8,12 @@ the node count at any depth exceeds the configured threshold.
 """
 
 import argparse
+import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
-import json
 import time
 
 # Ensure scripts/ is importable
@@ -51,40 +53,41 @@ def get_provider_info() -> dict:
 # Provider auto-detection
 # ---------------------------------------------------------------------------
 
-def _detect_provider(cfg: dict) -> tuple:
+# Cached absolute path to claude CLI (resolved once per process)
+_claude_cli_path: str | None = None
+_claude_cli_checked: bool = False
+
+
+def _detect_provider(cfg: dict) -> tuple[str, str] | tuple[None, None]:
     """
-    Auto-detect the best available LLM provider from environment.
+    Auto-detect the best available LLM provider from environment and PATH.
 
     Returns (provider, model) or (None, None) when nothing is available.
-    Priority: Anthropic API key > OpenAI API key > openaiBaseUrl (Ollama) > None.
+    Priority: claude-cli > Anthropic API key > OpenAI API key > openaiBaseUrl (Ollama) > None.
     """
-    # 1. Anthropic API key or OAuth credentials
+    global _claude_cli_path, _claude_cli_checked
+
+    # 1. Claude Code CLI (uses Max/Pro subscription via OAuth internally)
+    if not _claude_cli_checked:
+        _claude_cli_path = shutil.which("claude")
+        _claude_cli_checked = True
+    if _claude_cli_path:
+        return ("claude-cli", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
+
+    # 2. Anthropic API key
     if os.environ.get("ANTHROPIC_API_KEY"):
         return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
 
-    # Check credentials file for OAuth token
-    creds_path = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
-    try:
-        with open(creds_path) as f:
-            creds = json.load(f)
-        if creds.get("claudeAiOauth", {}).get("accessToken"):
-            return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        pass
-
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
-
-    # 2. OpenAI API key
+    # 3. OpenAI API key
     if os.environ.get("OPENAI_API_KEY"):
         return ("openai", cfg.get("summaryModel") or "gpt-4.1-mini")
 
-    # 3. openaiBaseUrl set (likely Ollama or local)
+    # 4. openaiBaseUrl set (likely Ollama or local)
     base_url = cfg.get("openaiBaseUrl") or os.environ.get("OPENAI_BASE_URL")
     if base_url:
         return ("openai", cfg.get("summaryModel") or "llama3")
 
-    # 4. Nothing available
+    # 5. Nothing available
     return (None, None)
 
 
@@ -238,7 +241,37 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
     if not provider:
         return ""
 
-    if provider == "openai":
+    if provider == "claude-cli":
+        try:
+            cli_path = _claude_cli_path or shutil.which("claude") or "claude"
+            cli_prompt = prompt
+            if json_mode:
+                cli_prompt = prompt + "\n\nRespond with valid JSON only. No markdown, no commentary."
+            # Strip ANTHROPIC_API_KEY so the CLI uses its own subscription auth
+            env = os.environ.copy()
+            env.pop("ANTHROPIC_API_KEY", None)
+            result = subprocess.run(
+                [cli_path, "--print", "--model", model],
+                input=cli_prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                _provider_state["consecutive_failures"] = 0
+                _provider_state["last_error"] = None
+                return result.stdout.strip()
+            _log_provider_error(
+                "llm_error", provider, model,
+                RuntimeError(result.stderr.strip()[:200] or f"exit code {result.returncode}"),
+            )
+        except subprocess.TimeoutExpired as e:
+            _log_provider_error("timeout", provider, model, e)
+        except Exception as e:
+            _log_provider_error("llm_error", provider, model, e)
+
+    elif provider == "openai":
         try:
             from openai import OpenAI
 
