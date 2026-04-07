@@ -90,7 +90,7 @@ def embed_texts(texts: list[str], cfg: dict) -> list[Optional[list[float]]]:
         if provider == "fastembed":
             return _fastembed_embed(texts, model)
         if provider == "openai":
-            return _openai_embed(texts, model)
+            return _openai_embed(texts, model, cfg)
         if provider == "anthropic":
             return _anthropic_embed(texts, model)
     except Exception:

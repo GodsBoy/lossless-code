@@ -10,7 +10,6 @@ the node count at any depth exceeds the configured threshold.
 import argparse
 import logging
 import os
-import subprocess
 import sys
 import json
 import time
@@ -172,7 +171,11 @@ def _log_provider_error(category: str, provider: str, model: str, error: Excepti
     _provider_state["last_error"] = category
     _provider_state["last_error_time"] = time.time()
     _provider_state["consecutive_failures"] += 1
-    _log.warning("[lossless-code] %s (%s:%s): %s", category, provider, model, error)
+    # Sanitize error message to avoid leaking API keys/tokens
+    safe_msg = type(error).__name__
+    if hasattr(error, "status_code"):
+        safe_msg += f" (HTTP {error.status_code})"
+    _log.warning("[lossless-code] %s (%s:%s): %s", category, provider, model, safe_msg)
     # Append to provider.log for hook visibility
     try:
         log_path = db.LOSSLESS_HOME / "provider.log"
@@ -180,7 +183,7 @@ def _log_provider_error(category: str, provider: str, model: str, error: Excepti
         if log_path.exists() and log_path.stat().st_size > 100_000:
             log_path.write_text("")
         with open(log_path, "a") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{category}] {provider}:{model} {error}\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{category}] {provider}:{model} {safe_msg}\n")
     except OSError:
         pass
 
