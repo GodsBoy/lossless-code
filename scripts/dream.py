@@ -46,8 +46,10 @@ def _get_logger() -> logging.Logger:
 def _dream_llm_cfg(config: dict) -> dict:
     """Build a config dict for call_llm using the dream-specific model."""
     return {
-        "summaryProvider": config.get("summaryProvider", "anthropic"),
+        "summaryProvider": config.get("summaryProvider"),
         "summaryModel": config.get("dreamModel", config.get("summaryModel", "claude-haiku-4-5-20251001")),
+        "anthropicBaseUrl": config.get("anthropicBaseUrl"),
+        "openaiBaseUrl": config.get("openaiBaseUrl"),
     }
 
 

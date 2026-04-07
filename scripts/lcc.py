@@ -226,6 +226,28 @@ def cmd_status(args):
     if embed_line:
         print(embed_line)
 
+    # Provider info (R5)
+    pinfo = summarise_mod.get_provider_info()
+    p_name = pinfo.get("provider") or "none"
+    p_model = pinfo.get("model") or "none"
+    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
+    p_err = pinfo.get("last_error")
+    if p_err:
+        err_time = pinfo.get("last_error_time")
+        if err_time:
+            ago = int(time.time() - err_time)
+            if ago < 3600:
+                err_ago = f"{ago // 60}m ago"
+            else:
+                err_ago = f"{ago // 3600}h ago"
+        else:
+            err_ago = "unknown"
+        err_str = f"{p_err} {err_ago}"
+    else:
+        err_str = "none"
+    print(f"  Provider:      {p_name} ({p_model}){p_suffix}")
+    print(f"               Last error: {err_str}")
+
 
 def cmd_reindex(args):
     """Embed un-indexed messages for hybrid search."""

@@ -30,6 +30,7 @@ from mcp.types import Tool, TextContent
 
 import db
 import inject_context
+import summarise as summarise_mod
 
 # ---------------------------------------------------------------------------
 # Override vault path if env var is set
@@ -308,12 +309,21 @@ def _do_status() -> str:
     vault_size = os.path.getsize(str(db.VAULT_DB)) if db.VAULT_DB.exists() else 0
     vault_mb = vault_size / (1024 * 1024)
 
+    # Provider info (MCP parity with CLI status)
+    pinfo = summarise_mod.get_provider_info()
+    p_name = pinfo.get("provider") or "none"
+    p_model = pinfo.get("model") or "none"
+    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
+    p_err = pinfo.get("last_error") or "none"
+
     return (
         f"lossless-code vault status\n"
         f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)\n"
         f"  Sessions:      {ses_count}\n"
         f"  Messages:      {msg_count} ({unsummarised} unsummarised)\n"
-        f"  Summaries:     {sum_count} (max depth: {max_depth})"
+        f"  Summaries:     {sum_count} (max depth: {max_depth})\n"
+        f"  Provider:      {p_name} ({p_model}){p_suffix}\n"
+        f"               Last error: {p_err}"
     )
 
 

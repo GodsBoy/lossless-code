@@ -113,10 +113,16 @@ def _fastembed_embed(texts: list[str], model_name: str) -> list[Optional[list[fl
         return [None] * len(texts)
 
 
-def _openai_embed(texts: list[str], model_name: str) -> list[Optional[list[float]]]:
+def _openai_embed(texts: list[str], model_name: str, cfg: dict = None) -> list[Optional[list[float]]]:
     try:
         import openai
-        client = openai.OpenAI()
+        base_url = None
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if cfg:
+            base_url = cfg.get("openaiBaseUrl") or os.environ.get("OPENAI_BASE_URL")
+            if base_url and not api_key:
+                api_key = "not-needed"
+        client = openai.OpenAI(base_url=base_url, api_key=api_key) if api_key else openai.OpenAI()
         BATCH = 32
         results: list[Optional[list[float]]] = []
         for i in range(0, len(texts), BATCH):

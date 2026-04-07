@@ -8,15 +8,85 @@ the node count at any depth exceeds the configured threshold.
 """
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
 import json
+import time
 
 # Ensure scripts/ is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+_log = logging.getLogger("lossless-code")
+if not _log.handlers:
+    _log.addHandler(logging.StreamHandler(sys.stderr))
+    _log.setLevel(logging.WARNING)
+
+# ---------------------------------------------------------------------------
+# Provider state (in-memory, per-process)
+# ---------------------------------------------------------------------------
+
+_provider_state = {
+    "provider": None,
+    "model": None,
+    "auto_detected": False,
+    "last_error": None,
+    "last_error_time": None,
+    "consecutive_failures": 0,
+}
+
+
+def get_provider_info() -> dict:
+    """Return current provider state for status display."""
+    return dict(_provider_state)
+
+
+# ---------------------------------------------------------------------------
+# Provider auto-detection
+# ---------------------------------------------------------------------------
+
+def _detect_provider(cfg: dict) -> tuple:
+    """
+    Auto-detect the best available LLM provider from environment.
+
+    Returns (provider, model) or (None, None) when nothing is available.
+    Priority: Anthropic API key > OpenAI API key > openaiBaseUrl (Ollama) > None.
+    """
+    # 1. Anthropic API key or OAuth credentials
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
+
+    # Check credentials file for OAuth token
+    creds_path = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
+    try:
+        with open(creds_path) as f:
+            creds = json.load(f)
+        if creds.get("claudeAiOauth", {}).get("accessToken"):
+            return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
+
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return ("anthropic", cfg.get("summaryModel") or "claude-haiku-4-5-20251001")
+
+    # 2. OpenAI API key
+    if os.environ.get("OPENAI_API_KEY"):
+        return ("openai", cfg.get("summaryModel") or "gpt-4.1-mini")
+
+    # 3. openaiBaseUrl set (likely Ollama or local)
+    base_url = cfg.get("openaiBaseUrl") or os.environ.get("OPENAI_BASE_URL")
+    if base_url:
+        return ("openai", cfg.get("summaryModel") or "llama3")
+
+    # 4. Nothing available
+    return (None, None)
 
 
 def _get_anthropic_auth() -> dict:
@@ -68,29 +138,84 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def call_llm(prompt: str, cfg: dict) -> str:
-    """
-    Call an LLM with an arbitrary prompt. Supports Anthropic and OpenAI providers.
+def _log_provider_error(category: str, provider: str, model: str, error: Exception) -> None:
+    """Log a provider error to stderr and provider.log."""
+    _provider_state["last_error"] = category
+    _provider_state["last_error_time"] = time.time()
+    _provider_state["consecutive_failures"] += 1
+    _log.warning("[lossless-code] %s (%s:%s): %s", category, provider, model, error)
+    # Append to provider.log for hook visibility
+    try:
+        log_path = db.LOSSLESS_HOME / "provider.log"
+        # Rotate at ~100KB
+        if log_path.exists() and log_path.stat().st_size > 100_000:
+            log_path.write_text("")
+        with open(log_path, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{category}] {provider}:{model} {error}\n")
+    except OSError:
+        pass
 
-    Returns the model response text, or empty string if the API is unavailable.
-    This is the raw provider call — callers compose their own prompts.
+
+def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
     """
-    provider = cfg.get("summaryProvider", "anthropic")
+    Call an LLM with an arbitrary prompt. Supports Anthropic, OpenAI, and any
+    OpenAI-compatible provider (Ollama, Groq, Together AI, etc.) via openaiBaseUrl.
+
+    Auto-detects the provider when summaryProvider is None.
+    Returns the model response text, or empty string if the API is unavailable.
+    """
+    provider = cfg.get("summaryProvider")
     model = cfg.get("summaryModel", "claude-haiku-4-5-20251001")
+
+    # Auto-detect provider when not explicitly set
+    if not provider:
+        provider, detected_model = _detect_provider(cfg)
+        if not model or model == "claude-haiku-4-5-20251001":
+            model = detected_model or model
+        _provider_state["auto_detected"] = True
+    else:
+        _provider_state["auto_detected"] = False
+
+    _provider_state["provider"] = provider
+    _provider_state["model"] = model
+
+    if not provider:
+        return ""
 
     if provider == "openai":
         try:
             from openai import OpenAI
 
-            client = OpenAI()  # reads OPENAI_API_KEY from env
-            response = client.chat.completions.create(
-                model=model,
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            base_url = cfg.get("openaiBaseUrl") or os.environ.get("OPENAI_BASE_URL")
+            api_key = os.environ.get("OPENAI_API_KEY") or ("not-needed" if base_url else None)
+            if not api_key:
+                return ""
+            client = OpenAI(base_url=base_url, api_key=api_key)
+            kwargs = {
+                "model": model,
+                "max_tokens": 2048,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            response = client.chat.completions.create(**kwargs)
+            _provider_state["consecutive_failures"] = 0
+            _provider_state["last_error"] = None
             return response.choices[0].message.content
-        except Exception:
-            pass
+        except Exception as e:
+            cat = "llm_error"
+            try:
+                import openai as _oai
+                if isinstance(e, _oai.AuthenticationError):
+                    cat = "auth_error"
+                elif isinstance(e, _oai.RateLimitError):
+                    cat = "rate_limit"
+                elif isinstance(e, _oai.APIConnectionError):
+                    cat = "connection_error"
+            except ImportError:
+                pass
+            _log_provider_error(cat, provider, model, e)
+
     elif provider == "anthropic":
         try:
             import anthropic
@@ -108,10 +233,27 @@ def call_llm(prompt: str, cfg: dict) -> str:
             # Handle reasoning models that return ThinkingBlock + TextBlock
             for block in response.content:
                 if hasattr(block, "text"):
+                    _provider_state["consecutive_failures"] = 0
+                    _provider_state["last_error"] = None
                     return block.text
             return ""
-        except Exception:
-            pass
+        except Exception as e:
+            cat = "llm_error"
+            try:
+                import anthropic as _anth
+                if isinstance(e, _anth.AuthenticationError):
+                    cat = "auth_error"
+                elif isinstance(e, _anth.RateLimitError):
+                    cat = "rate_limit"
+                elif isinstance(e, _anth.APIConnectionError):
+                    cat = "connection_error"
+            except ImportError:
+                pass
+            _log_provider_error(cat, provider, model, e)
+
+    elif provider == "local":
+        # Route to extractive fallback (handled by caller)
+        return ""
 
     return ""
 
@@ -133,6 +275,14 @@ def call_summary_model(text: str, cfg: dict) -> str:
     result = call_llm(prompt, cfg)
     if result:
         return result
+
+    # Degraded mode warning (R6)
+    provider = _provider_state.get("provider") or "none"
+    model = _provider_state.get("model") or "none"
+    _log.warning(
+        "[lossless-code] LLM unavailable (%s:%s), using extractive fallback. "
+        "Run 'lcc status' for details.", provider, model
+    )
 
     # Fallback: extractive summary (take first line of each turn)
     lines = text.strip().split("\n")
