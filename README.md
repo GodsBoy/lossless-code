@@ -4,7 +4,7 @@
 
 **DAG-based Lossless Context Management for Claude Code.**
 
-*Every message preserved forever. Summaries cascade, never delete. Full recall across sessions.*
+*Every message preserved forever. Summaries cascade, never delete. Full recall across sessions. Works with any LLM.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/GodsBoy/lossless-code?style=social)](https://github.com/GodsBoy/lossless-code/stargazers)
@@ -17,6 +17,7 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks-D97706?logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
 [![MCP](https://img.shields.io/badge/MCP-server-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/GodsBoy/lossless-code/pulls)
+![Provider Agnostic](https://img.shields.io/badge/LLM-any_provider-blueviolet)
 
 [Getting Started](#install) · [MCP Server](#mcp-server) · [Commands](#commands) · [Dream](#lossless-dream) · [Terminal UI](#terminal-ui-lcc-tui) · [How It Works](#how-it-works) · [Configuration](#configuration) · [Contributing](#contributing)
 
@@ -24,7 +25,7 @@
 
 ---
 
-> Claude Code forgets. claude-mem remembers fragments. lossless-code remembers everything.
+> Claude Code forgets. claude-mem remembers fragments. MemPalace compresses until you can't trace back. lossless-code remembers everything.
 
 ## Try it in 60 seconds
 
@@ -87,20 +88,21 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
 
 ## Comparison
 
-| | lossless-code | ClawMem | context-memory | claude-mem |
-|---|---|---|---|---|
-| **Storage** | SQLite with FTS5 | SQLite + vector DB | Markdown files | SQLite + Chroma |
-| **Structure** | DAG (summaries cascade) | Flat RAG retrieval | Flat retrieval | Flat retrieval |
-| **Drill-down** | Full (summary to source messages) | None | None | None |
-| **Auto-capture** | Hooks (zero manual effort) | Hooks + watcher | Manual | Hooks + worker |
-| **Cross-session** | Yes (vault persists) | Yes | Yes | Yes |
-| **Summarisation** | Cascading DAG (depth-N) | Single-level | None | Single-level |
-| **Search** | FTS5 full-text | Hybrid (BM25 + vector + reranker) | Keyword | Hybrid (BM25 + vector) |
-| **MCP tools** | 6 | 28 | 0 | 10+ |
-| **Background services** | None | watcher + embed timer + GPU servers | None | Worker on port 37777 |
-| **Runtime** | Python (stdlib) | Bun + llama.cpp (optional) | None | Bun |
-| **Models required** | None (optional for summarisation) | 2GB+ GGUF (embed + reranker) | None | Chroma embeddings |
-| **Idle cost** | Zero | CPU/RAM for services + embedding sweeps | Zero | Worker process |
+| | lossless-code | MemPalace | ClawMem | context-memory | claude-mem |
+|---|---|---|---|---|---|
+| **Storage** | SQLite with FTS5 | SQLite | SQLite + vector DB | Markdown files | SQLite + Chroma |
+| **Structure** | DAG (summaries cascade) | Palace (Wings/Rooms/Halls) | Flat RAG retrieval | Flat retrieval | Flat retrieval |
+| **Drill-down** | Full (summary -> source messages) | None (30x lossy compression) | None | None | None |
+| **Auto-capture** | Hooks (zero manual effort) | Mining command required | Hooks + watcher | Manual | Hooks + worker |
+| **Cross-session** | Yes (vault persists) | Yes | Yes | Yes | Yes |
+| **Summarisation** | Cascading DAG (depth-N) | AAAK compression (lossy) | Single-level | None | Single-level |
+| **Search** | Hybrid (FTS5 + vector) | Semantic + palace navigation | Hybrid (BM25 + vector + reranker) | Keyword | Hybrid (BM25 + vector) |
+| **Multi-provider** | Any (auto-detect + openaiBaseUrl) | Any (all major LLMs) | Bun + llama.cpp | None | Bun |
+| **MCP tools** | 6 | 19 | 28 | 0 | 10+ |
+| **Background services** | None | None | watcher + embed timer + GPU | None | Worker on port 37777 |
+| **Runtime** | Python (stdlib) | Python | Bun + llama.cpp (optional) | None | Bun |
+| **Models required** | None (extractive fallback) | None (AAAK is non-LLM) | 2GB+ GGUF (embed + reranker) | None | Chroma embeddings |
+| **Idle cost** | Zero | Zero | CPU/RAM for services | Zero | Worker process |
 
 ## Why lossless-code Costs Less
 
@@ -138,7 +140,22 @@ lossless-code's DAG captures the full conversation **before** compaction happens
 - One long session is cheaper than multiple short sessions covering the same ground
 - Context survives compaction without paying to re-read everything
 
-### 5. No runtime dependencies
+### 5. How lossless-code Compares to MemPalace on Cost
+
+[MemPalace](https://github.com/milla-jovovich/mempalace) achieves ~$0.70/yr by compressing context into an AAAK dialect (~170 tokens loaded per session). This is impressive for token efficiency, but the compression is lossy — you cannot drill back to the original conversation that produced a fact.
+
+lossless-code takes a different approach: **nothing is compressed away.** Every message stays verbatim in `vault.db`. Context is loaded on-demand, not on every prompt. With a cheap model:
+
+| Approach | Per-session cost | Annual (5 sessions/day) |
+|----------|-----------------|------------------------|
+| MemPalace wake-up (~170 tokens) | ~$0.0004 | ~$0.70/yr |
+| lossless-code (on-demand, 0-1 recalls/session) | ~$0.001 | ~$1.80/yr |
+| lossless-code + gpt-4.1-nano summaries | ~$0.01 | ~$18/yr |
+| LLM summary injection every prompt | ~$0.03 | ~$55/yr |
+
+lossless-code costs slightly more per session but preserves full fidelity with drill-down to original messages. For users who value the ability to trace any summary back to its source conversation, the trade-off is clear.
+
+### 6. No runtime dependencies
 
 | Dependency | lossless-code | ClawMem | claude-mem |
 |---|---|---|---|
@@ -445,8 +462,9 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 ```json
 {
   "summaryModel": "claude-haiku-4-5-20251001",
-  "summaryProvider": "anthropic",
+  "summaryProvider": null,
   "anthropicBaseUrl": null,
+  "openaiBaseUrl": null,
   "chunkSize": 20,
   "depthThreshold": 10,
   "incrementalMaxDepth": -1,
@@ -455,6 +473,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
   "dreamAfterSessions": 5,
   "dreamAfterHours": 24,
   "dreamModel": "claude-haiku-4-5-20251001",
+  "handoffModel": null,
   "dreamTokenBudget": 2000,
   "contextTokenBudget": 8000
 }
@@ -463,8 +482,9 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | Key | Default | Description |
 |-----|---------|-------------|
 | `summaryModel` | `claude-haiku-4-5-20251001` | Model for compactions |
-| `summaryProvider` | `anthropic` | LLM provider: `anthropic` or `openai` |
+| `summaryProvider` | `null` | LLM provider: `null` (auto-detect), `anthropic`, `openai`, or `local` |
 | `anthropicBaseUrl` | `null` | Custom Anthropic-compatible API endpoint (overrides `ANTHROPIC_BASE_URL` env) |
+| `openaiBaseUrl` | `null` | Custom OpenAI-compatible endpoint (Ollama, Groq, Together AI, LM Studio, etc.) |
 | `chunkSize` | `20` | Messages per compaction chunk |
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
 | `incrementalMaxDepth` | `-1` | Max cascade depth (-1 = unlimited) |
@@ -473,25 +493,29 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `dreamAfterSessions` | `5` | Sessions since last dream before auto-trigger |
 | `dreamAfterHours` | `24` | Hours since last dream before auto-trigger |
 | `dreamModel` | `claude-haiku-4-5-20251001` | Model for dream pattern extraction |
+| `handoffModel` | `null` | Model for handoff generation (falls back to `summaryModel`) |
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
 | `contextTokenBudget` | `8000` | Max tokens for total context injection on SessionStart (summaries + handoff + dreams) |
 
+**Environment variable overrides:** Set `LOSSLESS_SUMMARY_PROVIDER`, `LOSSLESS_SUMMARY_MODEL`, or `LOSSLESS_DREAM_MODEL` to override config.json values. Useful for hooks and CI environments.
+
 ## Compaction Configuration
 
-lossless-code supports multiple LLM providers for compactions. Configure your provider in `~/.lossless-code/config.json`:
+lossless-code **auto-detects your LLM provider** from environment variables. No configuration needed for most setups — just have your API key set and it works.
 
-```json
-{
-  "summaryModel": "gpt-4.1-mini",
-  "summaryProvider": "openai",
-  "chunkSize": 20,
-  "depthThreshold": 10
-}
-```
+### Auto-Detection (default)
+
+When `summaryProvider` is `null` (the default), lossless-code checks in priority order:
+
+1. `ANTHROPIC_API_KEY` -> uses Anthropic
+2. Claude Code OAuth token from `~/.claude/.credentials.json` -> uses Anthropic via proxy
+3. `OPENAI_API_KEY` -> uses OpenAI
+4. `openaiBaseUrl` set -> uses OpenAI-compatible endpoint (Ollama, etc.)
+5. Nothing found -> uses extractive fallback (no API needed, lower quality)
 
 ### Supported Providers
 
-**Anthropic** (default)
+**Anthropic**
 
 Authentication is resolved automatically from multiple sources (in priority order):
 
@@ -517,7 +541,45 @@ Set `OPENAI_API_KEY` in your environment.
 
 Model examples: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`
 
-You can use any model your provider supports. These are just common choices.
+**Ollama (local, free)**
+
+Run models locally with [Ollama](https://ollama.com). No API key needed.
+
+```json
+{
+  "summaryProvider": "openai",
+  "openaiBaseUrl": "http://localhost:11434/v1",
+  "summaryModel": "llama3"
+}
+```
+
+Model examples: `llama3`, `mistral`, `phi3`, `gemma2`
+
+**Groq / Together AI / Fireworks**
+
+Any OpenAI-compatible provider works via `openaiBaseUrl`:
+
+```json
+{
+  "summaryProvider": "openai",
+  "openaiBaseUrl": "https://api.groq.com/openai/v1",
+  "summaryModel": "llama-3.1-8b-instant"
+}
+```
+
+```bash
+export OPENAI_API_KEY="your-groq-api-key"
+```
+
+**LM Studio**
+
+```json
+{
+  "summaryProvider": "openai",
+  "openaiBaseUrl": "http://localhost:1234/v1",
+  "summaryModel": "local-model"
+}
+```
 
 **Custom Anthropic-compatible endpoints**
 
@@ -539,10 +601,20 @@ Reasoning models that return `ThinkingBlock` responses are handled automatically
 
 Model examples: `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`
 
+**Local (extractive fallback)**
+
+When no LLM provider is available, lossless-code uses TF-IDF sentence scoring to produce extractive summaries from your conversation history. No API keys, no cost, works everywhere. Quality is lower than LLM summaries but the vault stays fully functional.
+
+```json
+{ "summaryProvider": "local" }
+```
+
 ### Cost Comparison
 
 | Model | Input cost (per 1M tokens) |
 |-------|---------------------------|
+| Ollama / local models | $0 |
+| Extractive fallback (no API) | $0 |
 | `gpt-4.1-nano` | ~$0.10 |
 | `gpt-4o-mini` | ~$0.15 |
 | `MiniMax-M2.7` | ~$0.30 |
@@ -552,13 +624,11 @@ Model examples: `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`
 
 ### Estimated Monthly Costs
 
-For typical compaction workloads using `gpt-4.1-mini`:
-
-| Usage | Estimated cost |
-|-------|---------------|
-| Light (1-2 sessions/day) | $1-3/month |
-| Moderate (3-5 sessions/day) | $3-7/month |
-| Heavy (10+ sessions/day) | $7-15/month |
+| Usage | Ollama (free) | gpt-4.1-nano | gpt-4.1-mini | claude-haiku |
+|-------|--------------|-------------|-------------|-------------|
+| Light (1-2 sessions/day) | $0 | $0.20-0.60 | $1-3 | $2-6 |
+| Moderate (3-5 sessions/day) | $0 | $0.60-1.50 | $3-7 | $6-14 |
+| Heavy (10+ sessions/day) | $0 | $1.50-3.00 | $7-15 | $14-30 |
 
 Compactions are triggered automatically before context compaction (PreCompact hook) and at session end (Stop hook). The extractive fallback runs automatically when no API key is configured: no hard dependency on any LLM provider.
 
