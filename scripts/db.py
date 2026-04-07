@@ -208,14 +208,20 @@ DEFAULT_CONFIG = {
     "openaiBaseUrl": None,
     "chunkSize": 20,
     "depthThreshold": 10,
-    "incrementalMaxDepth": -1,
+    "incrementalMaxDepth": 5,
     "workingDirFilter": None,
+    # Summary size caps (prevent vault bloat)
+    "leafTargetTokens": 2400,
+    "condensedTargetTokens": 2000,
+    "summaryMaxOverageFactor": 3,
+    # Dream cycle
     "autoDream": True,
     "dreamAfterSessions": 5,
     "dreamAfterHours": 24,
     "dreamModel": "claude-haiku-4-5-20251001",
     "handoffModel": None,  # Falls back to summaryModel
     "dreamTokenBudget": 2000,
+    "dreamBatchSize": 100,
     # Semantic search (Phase 2)
     "embeddingEnabled": False,
     "embeddingProvider": "local",
@@ -563,6 +569,44 @@ def get_summaries_since(timestamp: int, working_dir: str = None, limit: int = 20
             "SELECT * FROM summaries WHERE created_at > ? ORDER BY created_at LIMIT ?",
             (timestamp, limit),
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_summary_ids_since(timestamp: int, working_dir: str = None, limit: int = 2000) -> list[str]:
+    """Get summary IDs (not content) created after a timestamp. Lightweight for pagination."""
+    db = get_db()
+    if working_dir:
+        rows = db.execute(
+            """SELECT s.id FROM summaries s
+               JOIN sessions sess ON s.session_id = sess.session_id
+               WHERE s.created_at > ? AND sess.working_dir = ?
+               ORDER BY s.created_at LIMIT ?""",
+            (timestamp, working_dir, limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT id FROM summaries WHERE created_at > ? ORDER BY created_at LIMIT ?",
+            (timestamp, limit),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_summaries_by_ids(ids: list[str]) -> list[dict]:
+    """Fetch summaries by a batch of IDs. Auto-chunks to stay within SQLite variable limits."""
+    if not ids:
+        return []
+    # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
+    if len(ids) > 900:
+        results = []
+        for i in range(0, len(ids), 900):
+            results.extend(get_summaries_by_ids(ids[i:i + 900]))
+        return results
+    db = get_db()
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT * FROM summaries WHERE id IN ({placeholders}) ORDER BY created_at",
+        ids,
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

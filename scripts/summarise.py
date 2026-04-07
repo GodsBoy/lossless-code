@@ -166,6 +166,30 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def cap_summary_text(text: str, target_tokens: int, overage_factor: int = 3) -> str:
+    """Hard-cap summary text to prevent vault bloat.
+
+    If the text exceeds target_tokens * overage_factor, deterministically
+    truncate it and append a [Capped] marker. Mirrors lossless-claw's
+    capSummaryText() approach.
+    """
+    max_tokens = target_tokens * overage_factor
+    current_tokens = estimate_tokens(text)
+    if current_tokens <= max_tokens:
+        return text
+    # Truncate to max_tokens worth of characters
+    max_chars = max_tokens * 4
+    truncated = text[:max_chars]
+    capped = truncated.rsplit("\n", 1)[0]  # break at last newline
+    if len(capped) < max_chars // 2:
+        capped = truncated  # accept mid-line break over excessive loss
+    _log.warning(
+        "Summary capped from ~%d to ~%d tokens (target=%d, factor=%d)",
+        current_tokens, max_tokens, target_tokens, overage_factor,
+    )
+    return f"{capped}\n\n[Capped from ~{current_tokens} to ~{max_tokens} tokens]"
+
+
 def _log_provider_error(category: str, provider: str, model: str, error: Exception) -> None:
     """Log a provider error to stderr and provider.log."""
     _provider_state["last_error"] = category
@@ -399,12 +423,16 @@ def summarise_messages(session_id: str = None) -> int:
     if not messages:
         return 0
 
+    leaf_target = cfg.get("leafTargetTokens", 2400)
+    overage = cfg.get("summaryMaxOverageFactor", 3)
+
     created = 0
     # Chunk messages
     for i in range(0, len(messages), chunk_size):
         chunk = messages[i : i + chunk_size]
         text = format_messages_for_summary(chunk)
         summary_text = call_summary_model(text, cfg)
+        summary_text = cap_summary_text(summary_text, leaf_target, overage)
 
         summary_id = db.gen_summary_id()
         source_ids = [("message", str(m["id"])) for m in chunk]
@@ -435,7 +463,9 @@ def cascade_summaries(session_id: str = None) -> int:
     """
     cfg = db.load_config()
     threshold = cfg.get("depthThreshold", 10)
-    max_depth = cfg.get("incrementalMaxDepth", -1)
+    max_depth = cfg.get("incrementalMaxDepth", 5)
+    condensed_target = cfg.get("condensedTargetTokens", 2000)
+    overage = cfg.get("summaryMaxOverageFactor", 3)
 
     total_created = 0
     depth = 0
@@ -455,6 +485,7 @@ def cascade_summaries(session_id: str = None) -> int:
             chunk = summaries[i : i + chunk_size]
             text = "\n\n---\n\n".join(s["content"] for s in chunk)
             summary_text = call_summary_model(text, cfg)
+            summary_text = cap_summary_text(summary_text, condensed_target, overage)
 
             summary_id = db.gen_summary_id()
             source_ids = [("summary", s["id"]) for s in chunk]

@@ -363,11 +363,12 @@ Full reference: [docs/tui.md](docs/tui.md)
 
 1. Collect unsummarised messages, chunk into groups of ~20
 2. Summarise each chunk (via Claude API or extractive fallback)
-3. Write summary nodes to `summaries` table (depth=0)
-4. Link to sources in `summary_sources`
-5. Mark source messages as summarised
-6. If depth-N exceeds threshold: cascade to depth-N+1
-7. Repeat until under threshold at every depth
+3. Hard-cap summary text to prevent vault bloat (leaf: 7,200 tokens max, condensed: 6,000 tokens max)
+4. Write summary nodes to `summaries` table (depth=0)
+5. Link to sources in `summary_sources`
+6. Mark source messages as summarised
+7. If depth-N exceeds threshold: cascade to depth-N+1 (max depth: 5)
+8. Repeat until under threshold or max depth reached
 
 ### Lossless Dream
 
@@ -467,7 +468,10 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
   "openaiBaseUrl": null,
   "chunkSize": 20,
   "depthThreshold": 10,
-  "incrementalMaxDepth": -1,
+  "incrementalMaxDepth": 5,
+  "leafTargetTokens": 2400,
+  "condensedTargetTokens": 2000,
+  "summaryMaxOverageFactor": 3,
   "workingDirFilter": null,
   "autoDream": true,
   "dreamAfterSessions": 5,
@@ -475,6 +479,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
   "dreamModel": "claude-haiku-4-5-20251001",
   "handoffModel": null,
   "dreamTokenBudget": 2000,
+  "dreamBatchSize": 100,
   "contextTokenBudget": 8000
 }
 ```
@@ -487,7 +492,10 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `openaiBaseUrl` | `null` | Custom OpenAI-compatible endpoint (Ollama, Groq, Together AI, LM Studio, etc.) |
 | `chunkSize` | `20` | Messages per compaction chunk |
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
-| `incrementalMaxDepth` | `-1` | Max cascade depth (-1 = unlimited) |
+| `incrementalMaxDepth` | `5` | Max cascade depth (prevents unbounded summary chains) |
+| `leafTargetTokens` | `2400` | Target token count for depth-0 (leaf) summaries |
+| `condensedTargetTokens` | `2000` | Target token count for depth-1+ (condensed) summaries |
+| `summaryMaxOverageFactor` | `3` | Hard cap multiplier: summaries exceeding target × factor are truncated |
 | `workingDirFilter` | `null` | Only capture messages from this directory |
 | `autoDream` | `true` | Enable automatic dream trigger from stop hook |
 | `dreamAfterSessions` | `5` | Sessions since last dream before auto-trigger |
@@ -495,6 +503,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `dreamModel` | `claude-haiku-4-5-20251001` | Model for dream pattern extraction |
 | `handoffModel` | `null` | Model for handoff generation (falls back to `summaryModel`) |
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
+| `dreamBatchSize` | `100` | Summaries loaded per batch during dream cycle (prevents OOM) |
 | `contextTokenBudget` | `8000` | Max tokens for total context injection on SessionStart (summaries + handoff + dreams) |
 
 **Environment variable overrides:** Set `LOSSLESS_SUMMARY_PROVIDER`, `LOSSLESS_SUMMARY_MODEL`, or `LOSSLESS_DREAM_MODEL` to override config.json values. Useful for hooks and CI environments.

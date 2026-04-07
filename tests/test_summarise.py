@@ -315,6 +315,88 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertIn("handoffModel", db.DEFAULT_CONFIG)
         self.assertIsNone(db.DEFAULT_CONFIG["handoffModel"])
 
+    def test_bloat_prevention_defaults(self):
+        self.assertEqual(db.DEFAULT_CONFIG["leafTargetTokens"], 2400)
+        self.assertEqual(db.DEFAULT_CONFIG["condensedTargetTokens"], 2000)
+        self.assertEqual(db.DEFAULT_CONFIG["summaryMaxOverageFactor"], 3)
+        self.assertEqual(db.DEFAULT_CONFIG["incrementalMaxDepth"], 5)
+        self.assertEqual(db.DEFAULT_CONFIG["dreamBatchSize"], 100)
+
+
+class TestCapSummaryText(unittest.TestCase):
+    """Test summary text capping to prevent vault bloat."""
+
+    def test_short_text_passes_through(self):
+        text = "This is a short summary."
+        result = summarise.cap_summary_text(text, 2400)
+        self.assertEqual(result, text)
+
+    def test_text_at_limit_passes_through(self):
+        # 2400 * 3 * 4 = 28800 chars is the limit
+        text = "x" * 28800
+        result = summarise.cap_summary_text(text, 2400, 3)
+        self.assertEqual(result, text)
+
+    def test_text_over_limit_is_capped(self):
+        text = "x" * 100000  # ~25000 tokens, well over 7200 limit
+        result = summarise.cap_summary_text(text, 2400, 3)
+        self.assertIn("[Capped from ~25000 to ~7200 tokens]", result)
+        self.assertLess(len(result), 30000)
+
+    def test_cap_preserves_newline_boundary(self):
+        lines = ["line " + str(i) for i in range(10000)]
+        text = "\n".join(lines)
+        result = summarise.cap_summary_text(text, 100, 1)  # very low cap: 400 chars
+        self.assertTrue(result.endswith("tokens]"))
+        # Should not cut mid-line (breaks at last newline before limit)
+        capped_content = result.split("\n\n[Capped")[0]
+        for line in capped_content.split("\n"):
+            self.assertTrue(line.startswith("line ") or line == "")
+
+    def test_condensed_target_lower_than_leaf(self):
+        text = "x" * 30000  # ~7500 tokens
+        leaf_result = summarise.cap_summary_text(text, 2400, 3)  # cap at 7200
+        condensed_result = summarise.cap_summary_text(text, 2000, 3)  # cap at 6000
+        # Condensed cap is tighter
+        self.assertLess(len(condensed_result), len(leaf_result))
+
+    def test_custom_overage_factor(self):
+        text = "x" * 50000  # ~12500 tokens
+        result_2x = summarise.cap_summary_text(text, 2400, 2)  # cap at 4800
+        result_3x = summarise.cap_summary_text(text, 2400, 3)  # cap at 7200
+        self.assertLess(len(result_2x), len(result_3x))
+
+    def test_empty_text(self):
+        result = summarise.cap_summary_text("", 2400)
+        self.assertEqual(result, "")
+
+
+class TestDbPaginationHelpers(unittest.TestCase):
+    """Test the new DB pagination functions."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DIR = db.Path(TEST_DIR)
+        db.VAULT_DB = db.VAULT_DIR / "vault.db"
+        db.CONFIG_PATH = db.VAULT_DIR / "config.json"
+        db.get_db()
+
+    def test_get_summary_ids_since_returns_ids(self):
+        ids = db.get_summary_ids_since(0)
+        self.assertIsInstance(ids, list)
+        for item in ids:
+            self.assertIsInstance(item, str)
+
+    def test_get_summaries_by_ids_empty(self):
+        result = db.get_summaries_by_ids([])
+        self.assertEqual(result, [])
+
+    def test_get_summaries_by_ids_nonexistent(self):
+        result = db.get_summaries_by_ids(["nonexistent_id"])
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()

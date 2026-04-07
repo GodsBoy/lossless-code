@@ -284,6 +284,12 @@ def consolidate_dag(config: dict) -> dict:
             merged_content = _merge_summaries(summaries_in_cluster, config)
             if not merged_content:
                 continue
+            # Hard-cap merged output to prevent vault bloat
+            condensed_target = config.get("condensedTargetTokens", 2000)
+            overage = config.get("summaryMaxOverageFactor", 3)
+            merged_content = summarise_mod.cap_summary_text(
+                merged_content, condensed_target, overage
+            )
 
             # Collect union of all sources
             all_sources = []
@@ -575,25 +581,31 @@ def _run_dream_locked(scope: str, working_dir: str, config: dict, log, start_tim
     last = db.get_last_dream(phash)
     since_ts = last["dreamed_at"] if last else 0
 
-    if scope == "global":
-        messages = db.get_messages_since(since_ts)
-        summaries = db.get_summaries_since(since_ts)
-        sessions_analyzed = db.count_sessions_since(since_ts)
-    else:
-        messages = db.get_messages_since(since_ts, working_dir)
-        summaries = db.get_summaries_since(since_ts, working_dir)
-        sessions_analyzed = db.count_sessions_since(since_ts, working_dir)
+    # Load messages (capped at 5000) and summary IDs only (lightweight)
+    wd = working_dir if scope != "global" else None
+    messages = db.get_messages_since(since_ts, wd)
+    summary_ids = db.get_summary_ids_since(since_ts, wd)
+    sessions_analyzed = db.count_sessions_since(since_ts, wd)
 
-    if not messages and not summaries:
+    if not messages and not summary_ids:
         msg = "No new data since last dream. Nothing to dream about."
         log.info(msg)
         return msg
 
-    log.info(f"Found {len(messages)} messages and {len(summaries)} summaries since last dream")
+    log.info(f"Found {len(messages)} messages and {len(summary_ids)} summaries since last dream")
 
-    # Phase 1: Pattern extraction
+    # Phase 1: Pattern extraction — process summaries in batches to avoid OOM
     log.info("Phase 1: Extracting patterns")
-    patterns = extract_patterns(messages, summaries, config)
+    batch_size = config.get("dreamBatchSize", 100)
+    patterns = []
+    # First batch includes messages; subsequent batches are summary-only
+    for i in range(0, max(len(summary_ids), 1), batch_size):
+        batch_ids = summary_ids[i:i + batch_size]
+        batch_summaries = db.get_summaries_by_ids(batch_ids)
+        batch_msgs = messages if i == 0 else []
+        batch_patterns = extract_patterns(batch_msgs, batch_summaries, config)
+        patterns.extend(batch_patterns)
+        del batch_summaries  # free each batch
     log.info(f"Extracted {len(patterns)} patterns")
 
     # Phase 2: DAG consolidation
