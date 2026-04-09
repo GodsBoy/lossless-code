@@ -15,7 +15,11 @@ def main():
     parser.add_argument("--dir", default="")
     args = parser.parse_args()
 
-    db.ensure_session(args.session, args.dir)
+    cfg = db.load_config()
+    if db.matches_any_pattern(args.session, cfg.get("ignoreSessionPatterns", [])):
+        return
+    stateless = db.matches_any_pattern(args.session, cfg.get("statelessSessionPatterns", []))
+    db.ensure_session(args.session, args.dir, stateless=stateless)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--dir", default="")
     args = parser.parse_args()
 
+    cfg = db.load_config()
+    if db.matches_any_pattern(args.session, cfg.get("ignoreSessionPatterns", [])):
+        return
+
     db.ensure_session(args.session, args.dir)
     db.store_message(
         session_id=args.session,

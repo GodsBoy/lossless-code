@@ -6,6 +6,7 @@ DAG link table (summary_sources).  Every public function in this module
 operates on a single connection obtained via `get_db()`.
 """
 
+import fnmatch
 import json
 import os
 import sqlite3
@@ -160,6 +161,11 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("ALTER TABLE summaries ADD COLUMN consolidated INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass  # Column already exists
+    # Migration: add stateless column to sessions (idempotent)
+    try:
+        _conn.execute("ALTER TABLE sessions ADD COLUMN stateless INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_summaries_depth_consolidated "
         "ON summaries(depth, consolidated)"
@@ -222,6 +228,9 @@ DEFAULT_CONFIG = {
     "handoffModel": None,  # Falls back to summaryModel
     "dreamTokenBudget": 2000,
     "dreamBatchSize": 100,
+    # Session filtering (lossless-claw parity)
+    "ignoreSessionPatterns": [],      # sessions matching these patterns are never stored
+    "statelessSessionPatterns": [],   # sessions matching these patterns skip summarization
     # Semantic search (Phase 2)
     "embeddingEnabled": False,
     "embeddingProvider": "local",
@@ -262,15 +271,33 @@ def save_config(cfg: dict) -> None:
 # Sessions
 # ---------------------------------------------------------------------------
 
-def ensure_session(session_id: str, working_dir: str = "") -> None:
-    """Create session row if it doesn't exist; update last_active."""
+def matches_any_pattern(session_id: str, patterns: list) -> bool:
+    """Return True if session_id matches any fnmatch glob pattern in the list."""
+    return any(fnmatch.fnmatch(session_id, p) for p in patterns)
+
+
+def get_session_stateless(session_id: str) -> bool:
+    """Return True if the session exists and is marked stateless."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT stateless FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def ensure_session(session_id: str, working_dir: str = "", stateless: bool = False) -> None:
+    """Create session row if it doesn't exist; update last_active.
+
+    stateless=True marks the session as read-only for summarization purposes —
+    messages are stored but dream/summarization passes skip the session.
+    """
     db = get_db()
     now = int(time.time())
     db.execute(
-        """INSERT INTO sessions (session_id, working_dir, started_at, last_active)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO sessions (session_id, working_dir, started_at, last_active, stateless)
+           VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(session_id) DO UPDATE SET last_active = ?""",
-        (session_id, working_dir, now, now, now),
+        (session_id, working_dir, now, now, int(stateless), now),
     )
     db.commit()
 
