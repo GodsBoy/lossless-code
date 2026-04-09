@@ -231,6 +231,15 @@ DEFAULT_CONFIG = {
     # Session filtering (lossless-claw parity)
     "ignoreSessionPatterns": [],      # sessions matching these patterns are never stored
     "statelessSessionPatterns": [],   # sessions matching these patterns skip summarization
+    # Summarization reliability (circuit breaker)
+    "circuitBreakerEnabled": True,    # stop calling LLM after N consecutive failures
+    "circuitBreakerThreshold": 5,     # number of failures before breaker trips
+    "circuitBreakerCooldownMs": 1800000,  # 30 min: time before breaker auto-resets
+    # Dynamic chunk sizing (lossless-claw parity)
+    "dynamicChunkSize": {
+        "enabled": True,
+        "max": 50,  # maximum chunk size for busy sessions; chunkSize is the floor
+    },
     # Semantic search (Phase 2)
     "embeddingEnabled": False,
     "embeddingProvider": "local",
@@ -565,16 +574,28 @@ def get_last_dream(project_hash_val: str) -> Optional[dict]:
 
 
 def get_messages_since(timestamp: int, working_dir: str = None, limit: int = 5000) -> list[dict]:
-    """Get messages created after a given timestamp, optionally filtered by working_dir."""
+    """Get messages created after a given timestamp, optionally filtered by working_dir.
+
+    Always excludes messages from stateless sessions (e.g. subagent/cron sessions).
+    """
     db = get_db()
+    # LEFT JOIN guards against messages with no matching session row
     if working_dir:
         rows = db.execute(
-            "SELECT * FROM messages WHERE timestamp > ? AND working_dir = ? ORDER BY timestamp LIMIT ?",
+            """SELECT m.* FROM messages m
+               LEFT JOIN sessions s ON m.session_id = s.session_id
+               WHERE m.timestamp > ? AND m.working_dir = ?
+                 AND (s.stateless IS NULL OR s.stateless = 0)
+               ORDER BY m.timestamp LIMIT ?""",
             (timestamp, working_dir, limit),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp LIMIT ?",
+            """SELECT m.* FROM messages m
+               LEFT JOIN sessions s ON m.session_id = s.session_id
+               WHERE m.timestamp > ?
+                 AND (s.stateless IS NULL OR s.stateless = 0)
+               ORDER BY m.timestamp LIMIT ?""",
             (timestamp, limit),
         ).fetchall()
     return [dict(r) for r in rows]

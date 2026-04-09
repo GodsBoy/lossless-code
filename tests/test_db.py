@@ -262,6 +262,54 @@ class TestDatabase(unittest.TestCase):
     def test_count_session_messages_nonexistent(self):
         self.assertEqual(db.count_session_messages("nonexistent-session"), 0)
 
+    # --- Session filtering (lossless-claw parity) ---
+
+    def test_stateless_column_exists(self):
+        conn = db.get_db()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        self.assertIn("stateless", cols)
+
+    def test_ensure_session_stateless_default_false(self):
+        db.ensure_session("normal-session-filter-test", "/tmp")
+        self.assertFalse(db.get_session_stateless("normal-session-filter-test"))
+
+    def test_ensure_session_stateless_true(self):
+        db.ensure_session("stateless-session-1", "/tmp", stateless=True)
+        self.assertTrue(db.get_session_stateless("stateless-session-1"))
+
+    def test_get_session_stateless_nonexistent(self):
+        self.assertFalse(db.get_session_stateless("no-such-session"))
+
+    def test_matches_any_pattern_exact(self):
+        self.assertTrue(db.matches_any_pattern("abc-session", ["abc-session"]))
+        self.assertFalse(db.matches_any_pattern("abc-session", ["xyz-session"]))
+
+    def test_matches_any_pattern_wildcard(self):
+        self.assertTrue(db.matches_any_pattern("agent:foo:subagent:bar", ["agent:*:subagent:*"]))
+        self.assertFalse(db.matches_any_pattern("agent:foo:bar", ["agent:*:subagent:*"]))
+
+    def test_matches_any_pattern_empty_list(self):
+        self.assertFalse(db.matches_any_pattern("any-session", []))
+
+    def test_matches_any_pattern_multiple(self):
+        patterns = ["cron:*", "agent:*:subagent:*"]
+        self.assertTrue(db.matches_any_pattern("cron:nightly", patterns))
+        self.assertTrue(db.matches_any_pattern("agent:foo:subagent:1", patterns))
+        self.assertFalse(db.matches_any_pattern("user-session-123", patterns))
+
+    def test_get_messages_since_excludes_stateless(self):
+        import time
+        ts = int(time.time()) - 1
+        db.ensure_session("stateless-msg-session", "/tmp/stateless", stateless=True)
+        db.store_message("stateless-msg-session", "user", "should be excluded")
+        db.ensure_session("normal-msg-session", "/tmp/normal")
+        db.store_message("normal-msg-session", "user", "should be included")
+
+        messages = db.get_messages_since(ts)
+        contents = [m["content"] for m in messages]
+        self.assertIn("should be included", contents)
+        self.assertNotIn("should be excluded", contents)
+
 
 if __name__ == "__main__":
     unittest.main()
