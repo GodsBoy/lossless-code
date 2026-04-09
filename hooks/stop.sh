@@ -33,11 +33,13 @@ python3 "$SCRIPTS_DIR/hook_stop.py" \
 
 # --- Dream auto-trigger (background, non-blocking) ---
 # Skip dream for stateless sessions (e.g. subagents, cron jobs)
-SESSION_STATELESS=$(python3 -c "
+# Pass SESSION_ID via env var to avoid shell injection from special characters in IDs
+SESSION_STATELESS=$(LOSSLESS_SESSION_ID="$SESSION_ID" LOSSLESS_SCRIPTS_DIR="$SCRIPTS_DIR" python3 -c "
 import sys, os
-sys.path.insert(0, '$SCRIPTS_DIR')
+sys.path.insert(0, os.environ['LOSSLESS_SCRIPTS_DIR'])
 import db
-print('true' if db.get_session_stateless('$SESSION_ID') else 'false')
+sid = os.environ.get('LOSSLESS_SESSION_ID', '')
+print('true' if sid and db.get_session_stateless(sid) else 'false')
 " 2>/dev/null || echo "false")
 
 if [ "$SESSION_STATELESS" != "true" ]; then

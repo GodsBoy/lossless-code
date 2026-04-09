@@ -80,7 +80,11 @@ def main():
     parser.add_argument("--transcript", default="")
     args = parser.parse_args()
 
-    db.ensure_session(args.session, args.dir)
+    cfg = db.load_config()
+    if db.matches_any_pattern(args.session, cfg.get("ignoreSessionPatterns", [])):
+        return
+    stateless = db.matches_any_pattern(args.session, cfg.get("statelessSessionPatterns", []))
+    db.ensure_session(args.session, args.dir, stateless=stateless)
 
     # Parse transcript to get all messages
     all_messages = parse_transcript(args.transcript)

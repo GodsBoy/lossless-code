@@ -75,8 +75,8 @@ def _write_circuit_breaker_state(failures: int, last_error_time: float) -> None:
         with open(tmp_path, "w") as f:
             json.dump({"failures": failures, "last_error_time": last_error_time}, f)
         tmp_path.replace(state_path)  # Atomic rename
-    except OSError:
-        pass  # Silently ignore write failures
+    except OSError as e:
+        _log.warning("[lossless-code] circuit_breaker write failed: %s", e)
 
 
 def _check_circuit_breaker(cfg: dict) -> tuple[bool, str]:
@@ -253,8 +253,12 @@ def _log_provider_error(category: str, provider: str, model: str, error: Excepti
     _provider_state["last_error"] = category
     _provider_state["last_error_time"] = time.time()
     _provider_state["consecutive_failures"] += 1
-    # Update circuit breaker state file
-    _write_circuit_breaker_state(_provider_state["consecutive_failures"], _provider_state["last_error_time"])
+    # Update circuit breaker state file — read persisted count and increment from it.
+    # The in-process counter resets each subprocess; the file is the authoritative accumulator
+    # across multiple hook invocations (each of which is a fresh subprocess).
+    _cb_state = _load_circuit_breaker_state()
+    _cb_failures = _cb_state["failures"] + 1
+    _write_circuit_breaker_state(_cb_failures, _provider_state["last_error_time"])
     # Sanitize error message to avoid leaking API keys/tokens
     safe_msg = type(error).__name__
     if hasattr(error, "status_code"):
@@ -519,7 +523,7 @@ def _compute_dynamic_chunk_size(cfg: dict, pending_count: int) -> int:
     """
     base = cfg.get("chunkSize", 20)
     dyn = cfg.get("dynamicChunkSize", {})
-    if not dyn.get("enabled", True):
+    if not bool(dyn.get("enabled", True)):
         return base
     cfg_max = int(dyn.get("max", 50))
     # floor = base, ceiling = min(cfg_max, 500)

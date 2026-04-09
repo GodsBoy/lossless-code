@@ -556,8 +556,9 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertEqual(state["failures"], 0)
 
     def test_call_llm_respects_tripped_breaker(self):
-        """call_llm returns empty string without hitting API when breaker is open."""
+        """call_llm returns empty string without hitting API when file-backed breaker is open."""
         import time
+        # Write a tripped state directly to the file — no mocking
         summarise._write_circuit_breaker_state(5, time.time())
         cfg = {
             "summaryProvider": "anthropic",
@@ -566,11 +567,24 @@ class TestCircuitBreaker(unittest.TestCase):
             "circuitBreakerThreshold": 5,
             "circuitBreakerCooldownMs": 1800000,
         }
-        # Patch _check_circuit_breaker to verify it's consulted and blocks the call
-        with patch.object(summarise, "_check_circuit_breaker", return_value=(False, "Circuit breaker open")) as mock_cb:
-            result = summarise.call_llm("test prompt", cfg)
+        # call_llm must respect the file state and return empty without making an API call
+        result = summarise.call_llm("test prompt", cfg)
         self.assertEqual(result, "")
-        mock_cb.assert_called_once()
+        # File state should be unchanged (no reset on blocked call)
+        state = summarise._load_circuit_breaker_state()
+        self.assertGreaterEqual(state["failures"], 5)
+
+    def test_failure_count_accumulates_from_file(self):
+        """Simulate cross-subprocess accumulation: each call reads file and increments."""
+        import time
+        summarise._write_circuit_breaker_state(2, time.time())
+        # Reset in-process state to simulate fresh subprocess
+        summarise._provider_state["consecutive_failures"] = 0
+        # Simulate a failure: _log_provider_error should read file (2) and write 3
+        err = RuntimeError("test error")
+        summarise._log_provider_error("llm_error", "test", "test-model", err)
+        state = summarise._load_circuit_breaker_state()
+        self.assertEqual(state["failures"], 3)  # 2 from file + 1 new
 
     def test_call_llm_threshold_one(self):
         """circuitBreakerThreshold=1: single failure trips on next call."""

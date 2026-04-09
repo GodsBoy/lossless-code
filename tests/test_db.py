@@ -310,6 +310,18 @@ class TestDatabase(unittest.TestCase):
         self.assertIn("should be included", contents)
         self.assertNotIn("should be excluded", contents)
 
+    def test_get_unsummarised_excludes_stateless(self):
+        """Stateless session messages must not enter the summarise path."""
+        db.ensure_session("stateless-unsummarised", "/tmp", stateless=True)
+        db.store_message("stateless-unsummarised", "user", "stateless-should-not-summarise")
+        db.ensure_session("normal-unsummarised", "/tmp")
+        db.store_message("normal-unsummarised", "user", "normal-should-summarise")
+
+        messages = db.get_unsummarised()
+        contents = [m["content"] for m in messages]
+        self.assertIn("normal-should-summarise", contents)
+        self.assertNotIn("stateless-should-not-summarise", contents)
+
 
 if __name__ == "__main__":
     unittest.main()

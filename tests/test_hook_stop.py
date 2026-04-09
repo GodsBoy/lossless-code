@@ -14,7 +14,7 @@ os.environ["LOSSLESS_HOME"] = TEST_DIR
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import db
-from hook_stop import extract_text_content, parse_transcript
+from hook_stop import extract_text_content, parse_transcript, main as hook_stop_main
 
 
 class TestExtractTextContent(unittest.TestCase):
@@ -125,6 +125,45 @@ class TestParseTranscript(unittest.TestCase):
         os.unlink(path)
 
 
+class TestHookStopPatternFiltering(unittest.TestCase):
+    """Tests that hook_stop.main() respects ignoreSessionPatterns and statelessSessionPatterns."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DB = db.LOSSLESS_HOME / "vault.db"
+        db.CONFIG_PATH = db.LOSSLESS_HOME / "config.json"
+        db.get_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.close_db()
+
+    def test_ignore_pattern_prevents_session_creation(self):
+        """Sessions matching ignoreSessionPatterns are not created by hook_stop."""
+        import json
+        db.save_config({**db.load_config(), "ignoreSessionPatterns": ["ignore-stop-*"]})
+        try:
+            import sys
+            sys.argv = ["hook_stop", "--session", "ignore-stop-test", "--dir", "/tmp", "--transcript", ""]
+            hook_stop_main()
+            self.assertIsNone(db.get_session("ignore-stop-test"))
+        finally:
+            db.save_config({**db.load_config(), "ignoreSessionPatterns": []})
+
+    def test_stateless_pattern_creates_stateless_session(self):
+        """Sessions matching statelessSessionPatterns are created with stateless=True by hook_stop."""
+        db.save_config({**db.load_config(), "statelessSessionPatterns": ["stateless-stop-*"]})
+        try:
+            import sys
+            sys.argv = ["hook_stop", "--session", "stateless-stop-test", "--dir", "/tmp", "--transcript", ""]
+            hook_stop_main()
+            self.assertTrue(db.get_session_stateless("stateless-stop-test"))
+        finally:
+            db.save_config({**db.load_config(), "statelessSessionPatterns": []})
+
+
 class TestDeduplication(unittest.TestCase):
     """Test that stop hook deduplication logic works correctly."""
 
@@ -203,18 +242,17 @@ class TestSessionFiltering(unittest.TestCase):
         self.assertNotIn("stateless content xyz", contents)
         self.assertIn("normal content xyz", contents)
 
-    def test_stateless_session_no_summaries_after_stop(self):
-        """Stateless sessions should not gain summaries (enforced at stop.sh layer)."""
-        # This test verifies the DB layer is correct — no summaries for stateless
+    def test_stateless_session_excluded_from_get_unsummarised(self):
+        """Stateless session messages must not appear in get_unsummarised() — the summarise path."""
         db.ensure_session("sl-nosummary-session", "/tmp", stateless=True)
         db.store_message("sl-nosummary-session", "user", "this is from a stateless session")
-        # No summarization call here — verify no summaries link to this session
-        conn = db.get_db()
-        count = conn.execute(
-            "SELECT COUNT(*) FROM summaries WHERE session_id = ?",
-            ("sl-nosummary-session",),
-        ).fetchone()[0]
-        self.assertEqual(count, 0)
+        db.ensure_session("sl-normal-session", "/tmp")
+        db.store_message("sl-normal-session", "user", "this is from a normal session")
+
+        msgs = db.get_unsummarised()
+        contents = [m["content"] for m in msgs]
+        self.assertNotIn("this is from a stateless session", contents)
+        self.assertIn("this is from a normal session", contents)
 
 
 if __name__ == "__main__":

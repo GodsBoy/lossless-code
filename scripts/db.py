@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     working_dir  TEXT,
     started_at   INTEGER,
     last_active  INTEGER,
-    handoff_text TEXT
+    handoff_text TEXT,
+    stateless    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -360,18 +361,27 @@ def store_message(
 
 
 def get_unsummarised(session_id: Optional[str] = None) -> list[dict]:
-    """Get messages not yet summarised, optionally filtered by session."""
+    """Get messages not yet summarised, optionally filtered by session.
+
+    Always excludes messages from stateless sessions (mirrors get_messages_since).
+    """
     db = get_db()
     if session_id:
         rows = db.execute(
-            """SELECT * FROM messages
-               WHERE summarised = 0 AND session_id = ?
-               ORDER BY timestamp""",
+            """SELECT m.* FROM messages m
+               LEFT JOIN sessions s ON m.session_id = s.session_id
+               WHERE m.summarised = 0 AND m.session_id = ?
+                 AND (s.stateless IS NULL OR s.stateless = 0)
+               ORDER BY m.timestamp""",
             (session_id,),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT * FROM messages WHERE summarised = 0 ORDER BY timestamp"
+            """SELECT m.* FROM messages m
+               LEFT JOIN sessions s ON m.session_id = s.session_id
+               WHERE m.summarised = 0
+                 AND (s.stateless IS NULL OR s.stateless = 0)
+               ORDER BY m.timestamp"""
         ).fetchall()
     return [dict(r) for r in rows]
 

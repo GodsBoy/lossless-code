@@ -21,8 +21,8 @@ def main():
     cfg = db.load_config()
     if db.matches_any_pattern(args.session, cfg.get("ignoreSessionPatterns", [])):
         return
-
-    db.ensure_session(args.session, args.dir)
+    stateless = db.matches_any_pattern(args.session, cfg.get("statelessSessionPatterns", []))
+    db.ensure_session(args.session, args.dir, stateless=stateless)
     db.store_message(
         session_id=args.session,
         role=args.role,
