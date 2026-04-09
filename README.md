@@ -480,7 +480,13 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
   "handoffModel": null,
   "dreamTokenBudget": 2000,
   "dreamBatchSize": 100,
-  "contextTokenBudget": 8000
+  "contextTokenBudget": 8000,
+  "ignoreSessionPatterns": [],
+  "statelessSessionPatterns": [],
+  "circuitBreakerEnabled": true,
+  "circuitBreakerThreshold": 5,
+  "circuitBreakerCooldownMs": 1800000,
+  "dynamicChunkSize": { "enabled": true, "max": 50 }
 }
 ```
 
@@ -490,7 +496,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `summaryProvider` | `null` | LLM provider: `null` (auto-detect), `anthropic`, `openai`, or `local` |
 | `anthropicBaseUrl` | `null` | Custom Anthropic-compatible API endpoint (overrides `ANTHROPIC_BASE_URL` env) |
 | `openaiBaseUrl` | `null` | Custom OpenAI-compatible endpoint (Ollama, Groq, Together AI, LM Studio, etc.) |
-| `chunkSize` | `20` | Messages per compaction chunk |
+| `chunkSize` | `20` | Messages per compaction chunk (floor for dynamic chunk sizing) |
 | `depthThreshold` | `10` | Max nodes at any depth before cascading |
 | `incrementalMaxDepth` | `5` | Max cascade depth (prevents unbounded summary chains) |
 | `leafTargetTokens` | `2400` | Target token count for depth-0 (leaf) summaries |
@@ -505,6 +511,32 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
 | `dreamBatchSize` | `100` | Summaries loaded per batch during dream cycle (prevents OOM) |
 | `contextTokenBudget` | `8000` | Max tokens for total context injection on SessionStart (summaries + handoff + dreams) |
+
+**Session filtering:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ignoreSessionPatterns` | `[]` | Glob patterns (Python `fnmatch`-style). Sessions matching these are completely ignored — no storage, no summarization. Example: `["cron:*", "agent:*:subagent:*"]` |
+| `statelessSessionPatterns` | `[]` | Glob patterns. Sessions matching these store messages normally but skip dream/summarization passes. Useful for subagent sessions you want searchable but not summarized. |
+
+**Summarization reliability (circuit breaker):**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `circuitBreakerEnabled` | `true` | Stop attempting LLM calls after consecutive failures |
+| `circuitBreakerThreshold` | `5` | Number of consecutive failures before the breaker trips |
+| `circuitBreakerCooldownMs` | `1800000` | 30 min: time before the breaker auto-resets and retries |
+
+State is persisted in `~/.lossless-code/circuit_breaker.json` so the breaker survives across hook invocations.
+
+**Dynamic chunk sizing:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `dynamicChunkSize.enabled` | `true` | Scale chunk size up in busy sessions |
+| `dynamicChunkSize.max` | `50` | Maximum chunk size; `chunkSize` is always the floor |
+
+In sessions with many unsummarized messages, the chunk size grows up to `max`, producing fewer but larger summarization passes. Hard-capped at 500 regardless of config.
 
 **Environment variable overrides:** Set `LOSSLESS_SUMMARY_PROVIDER`, `LOSSLESS_SUMMARY_MODEL`, or `LOSSLESS_DREAM_MODEL` to override config.json values. Useful for hooks and CI environments.
 
