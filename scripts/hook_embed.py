@@ -24,8 +24,11 @@ def main():
     if not cfg.get("embeddingEnabled", False):
         return
 
-    conn = db.get_db()
     session_id = args.session or None
+    if session_id and db.get_session_stateless(session_id):
+        return
+
+    conn = db.get_db()
     embed.embed_messages_batch(conn, cfg, session_id=session_id)
 
 

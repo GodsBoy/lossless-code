@@ -32,11 +32,21 @@ python3 "$SCRIPTS_DIR/hook_stop.py" \
     2>/dev/null || true
 
 # --- Dream auto-trigger (background, non-blocking) ---
-SHOULD_DREAM=$(python3 "$SCRIPTS_DIR/dream.py" --check-trigger --cwd "$CWD" 2>/dev/null || echo "false")
-if [ "$SHOULD_DREAM" = "true" ]; then
-    nohup python3 "$SCRIPTS_DIR/dream.py" --run --project "$CWD" \
-        </dev/null >/dev/null 2>&1 &
-    disown 2>/dev/null || true
+# Skip dream for stateless sessions (e.g. subagents, cron jobs)
+SESSION_STATELESS=$(python3 -c "
+import sys, os
+sys.path.insert(0, '$SCRIPTS_DIR')
+import db
+print('true' if db.get_session_stateless('$SESSION_ID') else 'false')
+" 2>/dev/null || echo "false")
+
+if [ "$SESSION_STATELESS" != "true" ]; then
+    SHOULD_DREAM=$(python3 "$SCRIPTS_DIR/dream.py" --check-trigger --cwd "$CWD" 2>/dev/null || echo "false")
+    if [ "$SHOULD_DREAM" = "true" ]; then
+        nohup python3 "$SCRIPTS_DIR/dream.py" --run --project "$CWD" \
+            </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+    fi
 fi
 
 # --- Embedding auto-index (background, non-blocking) ---

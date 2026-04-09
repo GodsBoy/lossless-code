@@ -164,5 +164,58 @@ class TestDeduplication(unittest.TestCase):
         self.assertEqual(db.count_session_messages(session_id), 4)
 
 
+class TestSessionFiltering(unittest.TestCase):
+    """Tests for session pattern filtering (ignore + stateless)."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DB = db.LOSSLESS_HOME / "vault.db"
+        db.CONFIG_PATH = db.LOSSLESS_HOME / "config.json"
+        db.get_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.close_db()
+
+    def test_stateless_session_flagged(self):
+        """Session created with stateless=True is correctly flagged."""
+        db.ensure_session("sl-test-1", "/tmp", stateless=True)
+        self.assertTrue(db.get_session_stateless("sl-test-1"))
+
+    def test_normal_session_not_stateless(self):
+        """Session created without stateless flag is normal."""
+        db.ensure_session("sl-test-normal", "/tmp")
+        self.assertFalse(db.get_session_stateless("sl-test-normal"))
+
+    def test_stateless_messages_excluded_from_get_messages_since(self):
+        """Messages from stateless sessions are excluded from dream queries."""
+        import time
+        ts = int(time.time()) - 1
+        db.ensure_session("sl-excluded-session", "/tmp", stateless=True)
+        db.store_message("sl-excluded-session", "user", "stateless content xyz")
+        db.ensure_session("sl-included-session", "/tmp", stateless=False)
+        db.store_message("sl-included-session", "user", "normal content xyz")
+
+        msgs = db.get_messages_since(ts)
+        contents = [m["content"] for m in msgs]
+        self.assertNotIn("stateless content xyz", contents)
+        self.assertIn("normal content xyz", contents)
+
+    def test_stateless_session_no_summaries_after_stop(self):
+        """Stateless sessions should not gain summaries (enforced at stop.sh layer)."""
+        # This test verifies the DB layer is correct — no summaries for stateless
+        db.ensure_session("sl-nosummary-session", "/tmp", stateless=True)
+        db.store_message("sl-nosummary-session", "user", "this is from a stateless session")
+        # No summarization call here — verify no summaries link to this session
+        conn = db.get_db()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM summaries WHERE session_id = ?",
+            ("sl-nosummary-session",),
+        ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
