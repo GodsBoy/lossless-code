@@ -433,5 +433,160 @@ class TestDbPaginationHelpers(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestDynamicChunkSize(unittest.TestCase):
+    """Tests for _compute_dynamic_chunk_size."""
+
+    def _cfg(self, base=20, enabled=True, max_val=50):
+        return {
+            "chunkSize": base,
+            "dynamicChunkSize": {"enabled": enabled, "max": max_val},
+        }
+
+    def test_disabled_returns_base(self):
+        cfg = self._cfg(enabled=False)
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 200), 20)
+
+    def test_floor_holds_with_small_pending(self):
+        # 30 pending // 2 = 15 < base=20 → returns 20
+        cfg = self._cfg(base=20, max_val=50)
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 30), 20)
+
+    def test_scales_up_with_large_pending(self):
+        # 200 pending // 2 = 100 > max=50 → returns 50
+        cfg = self._cfg(base=20, max_val=50)
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 200), 50)
+
+    def test_mid_range(self):
+        # 60 pending // 2 = 30; floor=20, max=50 → returns 30
+        cfg = self._cfg(base=20, max_val=50)
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 60), 30)
+
+    def test_max_less_than_base_floor_wins(self):
+        # max=15 < base=20 → min(15,500)=15; max(20,...)≥20
+        cfg = self._cfg(base=20, max_val=15)
+        result = summarise._compute_dynamic_chunk_size(cfg, 200)
+        self.assertEqual(result, 20)
+
+    def test_hard_cap_500(self):
+        # max=9999 but hard cap is 500; 2000 pending // 2 = 1000 > 500 → 500
+        cfg = self._cfg(base=20, max_val=9999)
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 2000), 500)
+
+    def test_no_dynamic_config_key_uses_defaults(self):
+        # No dynamicChunkSize key → defaults: enabled=True, max=50 (via missing)
+        cfg = {"chunkSize": 20}
+        # pending=0 → max(20, min(50, 0))=20
+        self.assertEqual(summarise._compute_dynamic_chunk_size(cfg, 0), 20)
+
+
+class TestCircuitBreaker(unittest.TestCase):
+    """Tests for file-backed circuit breaker in summarise.py."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.VAULT_DIR = db.Path(TEST_DIR)
+        db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DB = db.VAULT_DIR / "vault.db"
+        db.CONFIG_PATH = db.VAULT_DIR / "config.json"
+        db.get_db()
+
+    def _state_path(self):
+        return db.LOSSLESS_HOME / "circuit_breaker.json"
+
+    def setUp(self):
+        # Clear state file before each test
+        path = self._state_path()
+        if path.exists():
+            path.unlink()
+        # Reset in-process state
+        summarise._provider_state["consecutive_failures"] = 0
+        summarise._provider_state["last_error_time"] = None
+
+    def test_load_state_missing_file(self):
+        state = summarise._load_circuit_breaker_state()
+        self.assertEqual(state["failures"], 0)
+        self.assertEqual(state["last_error_time"], 0)
+
+    def test_load_state_corrupt_file(self):
+        self._state_path().write_text("not valid json")
+        state = summarise._load_circuit_breaker_state()
+        self.assertEqual(state["failures"], 0)
+
+    def test_write_and_load_state(self):
+        import time
+        now = time.time()
+        summarise._write_circuit_breaker_state(3, now)
+        state = summarise._load_circuit_breaker_state()
+        self.assertEqual(state["failures"], 3)
+        self.assertAlmostEqual(state["last_error_time"], now, delta=0.01)
+
+    def test_write_atomic_creates_file(self):
+        summarise._write_circuit_breaker_state(1, 12345.0)
+        self.assertTrue(self._state_path().exists())
+
+    def test_check_breaker_disabled(self):
+        summarise._write_circuit_breaker_state(99, 9999999999.0)
+        cfg = {"circuitBreakerEnabled": False, "circuitBreakerThreshold": 5, "circuitBreakerCooldownMs": 1800000}
+        should_proceed, msg = summarise._check_circuit_breaker(cfg)
+        self.assertTrue(should_proceed)
+
+    def test_check_breaker_under_threshold(self):
+        summarise._write_circuit_breaker_state(2, 9999999999.0)
+        cfg = {"circuitBreakerEnabled": True, "circuitBreakerThreshold": 5, "circuitBreakerCooldownMs": 1800000}
+        should_proceed, _ = summarise._check_circuit_breaker(cfg)
+        self.assertTrue(should_proceed)
+
+    def test_check_breaker_tripped(self):
+        import time
+        summarise._write_circuit_breaker_state(5, time.time())
+        cfg = {"circuitBreakerEnabled": True, "circuitBreakerThreshold": 5, "circuitBreakerCooldownMs": 1800000}
+        should_proceed, msg = summarise._check_circuit_breaker(cfg)
+        self.assertFalse(should_proceed)
+        self.assertIn("Circuit breaker open", msg)
+
+    def test_check_breaker_cooldown_expired(self):
+        # Write a state with old last_error_time (past cooldown)
+        summarise._write_circuit_breaker_state(5, 0.0)  # epoch = way past cooldown
+        cfg = {"circuitBreakerEnabled": True, "circuitBreakerThreshold": 5, "circuitBreakerCooldownMs": 1800000}
+        should_proceed, _ = summarise._check_circuit_breaker(cfg)
+        self.assertTrue(should_proceed)
+        # State should be reset
+        state = summarise._load_circuit_breaker_state()
+        self.assertEqual(state["failures"], 0)
+
+    def test_call_llm_respects_tripped_breaker(self):
+        """call_llm returns empty string without hitting API when breaker is open."""
+        import time
+        summarise._write_circuit_breaker_state(5, time.time())
+        cfg = {
+            "summaryProvider": "anthropic",
+            "summaryModel": "claude-haiku-4-5-20251001",
+            "circuitBreakerEnabled": True,
+            "circuitBreakerThreshold": 5,
+            "circuitBreakerCooldownMs": 1800000,
+        }
+        # Patch _check_circuit_breaker to verify it's consulted and blocks the call
+        with patch.object(summarise, "_check_circuit_breaker", return_value=(False, "Circuit breaker open")) as mock_cb:
+            result = summarise.call_llm("test prompt", cfg)
+        self.assertEqual(result, "")
+        mock_cb.assert_called_once()
+
+    def test_call_llm_threshold_one(self):
+        """circuitBreakerThreshold=1: single failure trips on next call."""
+        import time
+        summarise._write_circuit_breaker_state(1, time.time())
+        cfg = {
+            "summaryProvider": "anthropic",
+            "summaryModel": "claude-haiku-4-5-20251001",
+            "circuitBreakerEnabled": True,
+            "circuitBreakerThreshold": 1,
+            "circuitBreakerCooldownMs": 1800000,
+        }
+        # With threshold=1 and failures=1, breaker should be open
+        should_proceed, _ = summarise._check_circuit_breaker(cfg)
+        self.assertFalse(should_proceed)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,61 @@ def get_provider_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Circuit breaker state (file-backed, cross-invocation)
+# ---------------------------------------------------------------------------
+
+def _load_circuit_breaker_state() -> dict:
+    """Load circuit breaker state from file. Returns {failures, last_error_time} or {failures: 0}."""
+    try:
+        state_path = db.LOSSLESS_HOME / "circuit_breaker.json"
+        if state_path.exists():
+            with open(state_path) as f:
+                data = json.load(f)
+            return {"failures": int(data.get("failures", 0)), "last_error_time": float(data.get("last_error_time", 0))}
+        return {"failures": 0, "last_error_time": 0}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"failures": 0, "last_error_time": 0}  # Safe default on corrupt file
+
+
+def _write_circuit_breaker_state(failures: int, last_error_time: float) -> None:
+    """Write circuit breaker state to file (atomic write via temp file)."""
+    try:
+        state_path = db.LOSSLESS_HOME / "circuit_breaker.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = state_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as f:
+            json.dump({"failures": failures, "last_error_time": last_error_time}, f)
+        tmp_path.replace(state_path)  # Atomic rename
+    except OSError:
+        pass  # Silently ignore write failures
+
+
+def _check_circuit_breaker(cfg: dict) -> tuple[bool, str]:
+    """
+    Check if circuit breaker is open. Returns (should_proceed, message).
+    If should_proceed is False, the caller should skip the LLM call.
+    """
+    if not cfg.get("circuitBreakerEnabled", True):
+        return (True, "")
+
+    state = _load_circuit_breaker_state()
+    threshold = cfg.get("circuitBreakerThreshold", 5)
+    cooldown_ms = cfg.get("circuitBreakerCooldownMs", 1800000)
+    cooldown_secs = cooldown_ms / 1000
+
+    if state["failures"] >= threshold:
+        elapsed = time.time() - state["last_error_time"]
+        if elapsed < cooldown_secs:
+            remaining_secs = int(cooldown_secs - elapsed)
+            return (False, f"Circuit breaker open ({state['failures']} failures, resets in {remaining_secs}s)")
+        # Cooldown expired, attempt to reset
+        _write_circuit_breaker_state(0, 0)
+        return (True, "")
+
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
 # Provider auto-detection
 # ---------------------------------------------------------------------------
 
@@ -194,10 +249,12 @@ def cap_summary_text(text: str, target_tokens: int, overage_factor: int = 3) -> 
 
 
 def _log_provider_error(category: str, provider: str, model: str, error: Exception) -> None:
-    """Log a provider error to stderr and provider.log."""
+    """Log a provider error to stderr and provider.log, and update circuit breaker state."""
     _provider_state["last_error"] = category
     _provider_state["last_error_time"] = time.time()
     _provider_state["consecutive_failures"] += 1
+    # Update circuit breaker state file
+    _write_circuit_breaker_state(_provider_state["consecutive_failures"], _provider_state["last_error_time"])
     # Sanitize error message to avoid leaking API keys/tokens
     safe_msg = type(error).__name__
     if hasattr(error, "status_code"):
@@ -241,6 +298,12 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
     if not provider:
         return ""
 
+    # Check circuit breaker before attempting API call
+    should_proceed, breaker_msg = _check_circuit_breaker(cfg)
+    if not should_proceed:
+        _log.warning("[lossless-code] circuit_breaker: %s", breaker_msg)
+        return ""
+
     if provider == "claude-cli":
         try:
             cli_path = _claude_cli_path or shutil.which("claude") or "claude"
@@ -261,6 +324,7 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
             if result.returncode == 0 and result.stdout.strip():
                 _provider_state["consecutive_failures"] = 0
                 _provider_state["last_error"] = None
+                _write_circuit_breaker_state(0, 0)
                 return result.stdout.strip()
             _log_provider_error(
                 "llm_error", provider, model,
@@ -290,6 +354,7 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
             response = client.chat.completions.create(**kwargs)
             _provider_state["consecutive_failures"] = 0
             _provider_state["last_error"] = None
+            _write_circuit_breaker_state(0, 0)
             return response.choices[0].message.content
         except Exception as e:
             cat = "llm_error"
@@ -324,6 +389,7 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
                 if hasattr(block, "text"):
                     _provider_state["consecutive_failures"] = 0
                     _provider_state["last_error"] = None
+                    _write_circuit_breaker_state(0, 0)
                     return block.text
             return ""
         except Exception as e:
@@ -444,17 +510,38 @@ def format_messages_for_summary(messages: list[dict], model: str = None) -> str:
     return "\n\n".join(parts)
 
 
+def _compute_dynamic_chunk_size(cfg: dict, pending_count: int) -> int:
+    """Compute the working chunk size for leaf summarization.
+
+    When dynamicChunkSize.enabled is True, scales the chunk up toward
+    dynamicChunkSize.max as pending_count grows, while keeping chunkSize
+    as the floor and a hard cap of 500 regardless of config.
+    """
+    base = cfg.get("chunkSize", 20)
+    dyn = cfg.get("dynamicChunkSize", {})
+    if not dyn.get("enabled", True):
+        return base
+    cfg_max = int(dyn.get("max", 50))
+    # floor = base, ceiling = min(cfg_max, 500)
+    ceiling = min(cfg_max, 500)
+    working = max(base, min(ceiling, pending_count // 2))
+    if working != base:
+        _log.debug("Dynamic chunk: %d messages pending → chunk=%d (base=%d, max=%d)", pending_count, working, base, ceiling)
+    return working
+
+
 def summarise_messages(session_id: str = None) -> int:
     """
     Run depth-0 summarisation on unsummarised messages.
     Returns the number of summary nodes created.
     """
     cfg = db.load_config()
-    chunk_size = cfg.get("chunkSize", 20)
 
     messages = db.get_unsummarised(session_id)
     if not messages:
         return 0
+
+    chunk_size = _compute_dynamic_chunk_size(cfg, len(messages))
 
     leaf_target = cfg.get("leafTargetTokens", 2400)
     overage = cfg.get("summaryMaxOverageFactor", 3)
