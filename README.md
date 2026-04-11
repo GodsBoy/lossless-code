@@ -355,7 +355,7 @@ Full reference: [docs/tui.md](docs/tui.md)
 |------|-------|---------|
 | `session_start.sh` | SessionStart | Register session, inject handoff + summaries |
 | `stop.sh` | Stop | Persist each turn to vault.db; trigger auto-dream if conditions met |
-| `user_prompt_submit.sh` | UserPromptSubmit | Surface relevant context for the prompt |
+| `user_prompt_submit.sh` | UserPromptSubmit | Surface relevant context for the prompt (BM25-ranked) |
 | `pre_compact.sh` | PreCompact | Run DAG summarisation before compaction |
 | `post_compact.sh` | PostCompact | Record compaction, re-inject top summaries |
 
@@ -383,6 +383,17 @@ Dream is the intelligence layer on top of the DAG. It analyzes vault history to 
 **Auto-trigger:** Dream runs automatically from the `stop.sh` hook when configurable conditions are met (default: 5+ sessions or 24+ hours since last dream). Runs as a background process with file-based locking to prevent concurrent races.
 
 **Context injection:** On SessionStart, per-project and global dream patterns are injected alongside existing handoff and summaries, within a configurable token budget (default 2000 tokens).
+
+### Prompt-Aware Context Eviction
+
+When context injection exceeds `contextTokenBudget`, lossless-code uses **budget-aware per-item packing** instead of hard truncation:
+
+1. **Reserve** — Handoff text and dream patterns are always included (reserved budget)
+2. **Rank** — When a user prompt is present, candidate summaries are ranked by FTS5 BM25 relevance. Without a prompt (session start), summaries are ranked by DAG depth
+3. **Pack** — Summaries are greedily packed by rank until the budget is exhausted. Each summary is either fully included or fully excluded — never truncated mid-content
+4. **Fallback** — If the query produces no FTS5 matches (or is blank), selection falls back to depth-based ordering
+
+This ensures the most relevant summaries survive budget pressure, rather than being silently dropped by position.
 
 **Lineage:** Every pattern in `patterns.md` includes source reference IDs. Use `lcc_expand` to trace any pattern back to the original conversation.
 
@@ -510,7 +521,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `handoffModel` | `null` | Model for handoff generation (falls back to `summaryModel`) |
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
 | `dreamBatchSize` | `100` | Summaries loaded per batch during dream cycle (prevents OOM) |
-| `contextTokenBudget` | `8000` | Max tokens for total context injection on SessionStart (summaries + handoff + dreams) |
+| `contextTokenBudget` | `8000` | Max tokens for context injection (summaries + handoff + dreams). When a query is present, summaries are ranked by FTS5 BM25 relevance and packed greedily within this budget. Without a query, summaries are selected by DAG depth. Individual summaries are never truncated mid-content. |
 
 **Session filtering:**
 

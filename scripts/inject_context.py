@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+from summarise import estimate_tokens
 
 
 def _load_dream_patterns(working_dir: str = "", config: dict = None) -> str:
@@ -80,14 +81,20 @@ def get_handoff(session_id: str = None) -> str:
 
 
 def get_relevant_summaries(query: str = "", limit: int = 5) -> list[dict]:
-    """Get relevant summaries — by search if query given, otherwise top by depth."""
-    if query:
-        results = db.search_summaries(query, limit=limit)
+    """Get relevant summaries — by FTS search if query given, otherwise top by depth.
+
+    Fetches limit * 3 candidates from the DB to give the budget-aware packer
+    a larger pool to select from. The caller decides how many to actually include.
+    """
+    candidates = limit * 3
+
+    if query and query.strip():
+        results = db.search_summaries(query, limit=candidates)
         if results:
             return results
 
     # Fallback: return highest-depth summaries (most compressed overview)
-    return db.get_top_summaries(limit=limit)
+    return db.get_top_summaries(limit=candidates)
 
 
 def build_context(
@@ -95,42 +102,80 @@ def build_context(
     working_dir: str = "",
     query: str = "",
     limit: int = 5,
+    config_override: dict = None,
 ) -> str:
-    """Build the context block to inject into Claude's session."""
-    parts = []
+    """Build the context block to inject into Claude's session.
+
+    Uses budget-aware per-item packing: handoff and dream patterns are always
+    included (reserved budget), then summaries are packed greedily by FTS5
+    relevance rank (when query is present) or depth (when no query).
+    Individual summaries are never truncated mid-content.
+    """
+    config = {**db.load_config(), **(config_override or {})}
+
+    ctx_budget = config.get("contextTokenBudget", 8000)
+
+    # --- Phase 1: Build reserved parts (always included) ---
+    reserved_parts = []
+    reserved_tokens = 0
 
     # Handoff from previous session
     handoff = get_handoff(session_id)
+    handoff_block = ""
     if handoff:
-        parts.append(f"## Previous Session Handoff\n{handoff}")
-
-    # Relevant summaries
-    summaries = get_relevant_summaries(query, limit=limit)
-    if summaries:
-        parts.append("## Relevant Context (from conversation history)")
-        for i, s in enumerate(summaries, 1):
-            depth_label = f"depth-{s['depth']}" if 'depth' in s else ""
-            parts.append(f"### [{i}] {depth_label}\n{s['content']}")
+        handoff_block = f"## Previous Session Handoff\n{handoff}"
+        reserved_parts.append(handoff_block)
+        reserved_tokens += estimate_tokens(handoff_block)
 
     # Dream patterns (project-specific + global)
-    dream_ctx = _load_dream_patterns(working_dir)
+    dream_ctx = _load_dream_patterns(working_dir, config)
+    dream_block = ""
     if dream_ctx:
-        parts.append(f"## Dream Patterns (extracted from history)\n{dream_ctx}")
+        dream_block = f"## Dream Patterns (extracted from history)\n{dream_ctx}"
+        reserved_parts.append(dream_block)
+        reserved_tokens += estimate_tokens(dream_block)
+
+    # --- Phase 2: Budget-aware summary packing ---
+    header = "# Lossless Context (auto-injected)\n"
+    section_header = "## Relevant Context (from conversation history)"
+    separator = "\n\n"
+
+    # Reserve tokens for header (always present when we have any content)
+    header_tokens = estimate_tokens(header)
+    # Separator tokens: one separator per reserved part, plus one for section_header
+    separator_tokens = estimate_tokens(separator) * (len(reserved_parts) + 1)
+
+    summary_budget = max(0, ctx_budget - reserved_tokens - header_tokens
+                         - estimate_tokens(section_header) - separator_tokens)
+    candidates = get_relevant_summaries(query, limit=limit)
+
+    selected_summaries = []
+    used_tokens = 0
+
+    for s in candidates:
+        content = s.get("content", "")
+        depth_label = f"depth-{s['depth']}" if "depth" in s else ""
+        item_text = f"### [{len(selected_summaries) + 1}] {depth_label}\n{content}"
+        item_tokens = estimate_tokens(item_text) + estimate_tokens(separator)
+
+        if used_tokens + item_tokens <= summary_budget:
+            selected_summaries.append(item_text)
+            used_tokens += item_tokens
+
+    # --- Phase 3: Assemble output ---
+    parts = []
+
+    if reserved_parts:
+        parts.extend(reserved_parts)
+
+    if selected_summaries:
+        parts.append(section_header)
+        parts.extend(selected_summaries)
 
     if not parts:
         return ""
 
-    header = "# Lossless Context (auto-injected)\n"
-    combined = header + "\n\n".join(parts)
-
-    # Respect contextTokenBudget to avoid blowing context on session start
-    config = db.load_config()
-    ctx_budget = config.get("contextTokenBudget", 8000)
-    max_chars = ctx_budget * 4  # ~4 chars per token
-    if len(combined) > max_chars:
-        combined = combined[:max_chars] + "\n\n... [truncated to contextTokenBudget]"
-
-    return combined
+    return header + separator.join(parts)
 
 
 def main():

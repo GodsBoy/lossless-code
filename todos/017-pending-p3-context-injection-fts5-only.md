@@ -1,5 +1,5 @@
 ---
-status: pending
+status: superseded
 priority: p3
 issue_id: "017"
 tags: [code-review, architecture, search]
@@ -59,3 +59,4 @@ _Confirm intent with Dewaldt. Option B (leave FTS5) may be correct if context in
 ## Work Log
 
 - 2026-03-29 — Identified by learnings-researcher as plan deviation
+- 2026-04-11 — Superseded by BM25 prompt-aware eviction (docs/plans/2026-04-11-001-feat-bm25-prompt-aware-eviction-plan.md). Context injection now uses FTS5 BM25 ranking with budget-aware packing.
