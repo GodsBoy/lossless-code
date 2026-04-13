@@ -18,3 +18,6 @@ vault.db
 vault.db-shm
 vault.db-wal
 docs/superpowers/
+
+# Compound engineering review run artifacts (per-run scratch, not tracked)
+.context/
