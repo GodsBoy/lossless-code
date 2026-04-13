@@ -340,6 +340,27 @@ def _do_status() -> str:
     vault_size = os.path.getsize(str(db.VAULT_DB)) if db.VAULT_DB.exists() else 0
     vault_mb = vault_size / (1024 * 1024)
 
+    cfg = db.load_config()
+    fp_line = ""
+    if cfg.get("fileContextEnabled", False):
+        tagged = d.execute(
+            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        distinct = d.execute(
+            "SELECT COUNT(DISTINCT file_path) FROM messages "
+            "WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        cache_count = 0
+        try:
+            import file_context as fc
+            cache_count = len(fc._load_cache())
+        except Exception:
+            pass
+        fp_line = (
+            f"\n  Fingerprint:   {tagged} tagged messages across "
+            f"{distinct} files ({cache_count} cached)"
+        )
+
     # Provider info (MCP parity with CLI status)
     pinfo = summarise_mod.get_provider_info()
     p_name = pinfo.get("provider") or "none"
@@ -355,6 +376,7 @@ def _do_status() -> str:
         f"  Summaries:     {sum_count} (max depth: {max_depth})\n"
         f"  Provider:      {p_name} ({p_model}){p_suffix}\n"
         f"               Last error: {p_err}"
+        f"{fp_line}"
     )
 
 

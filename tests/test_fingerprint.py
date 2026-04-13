@@ -405,5 +405,53 @@ class TestExpandByFile(unittest.TestCase):
             db.save_config(cfg)
 
 
+class TestStatusFingerprintSurface(unittest.TestCase):
+    """PR-B/9 — lcc status surfaces tagged/file counts when flag is on."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.get_db()
+        db.ensure_session("status-fp-session", "/tmp/stfp")
+        db.store_message(
+            session_id="status-fp-session",
+            role="tool",
+            content="Edit: status_a.py",
+            tool_name="Edit",
+            working_dir="/tmp/stfp",
+            file_path="status_a.py",
+        )
+        db.store_message(
+            session_id="status-fp-session",
+            role="tool",
+            content="Edit: status_b.py",
+            tool_name="Edit",
+            working_dir="/tmp/stfp",
+            file_path="status_b.py",
+        )
+
+    def test_mcp_status_shows_fingerprint_line_when_enabled(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp"))
+        import server as mcp_server
+        cfg = db.load_config()
+        cfg["fileContextEnabled"] = True
+        db.save_config(cfg)
+        try:
+            out = mcp_server._do_status()
+            self.assertIn("Fingerprint:", out)
+            self.assertIn("tagged messages", out)
+        finally:
+            cfg["fileContextEnabled"] = False
+            db.save_config(cfg)
+
+    def test_mcp_status_hides_fingerprint_line_when_disabled(self):
+        import server as mcp_server
+        cfg = db.load_config()
+        cfg["fileContextEnabled"] = False
+        db.save_config(cfg)
+        out = mcp_server._do_status()
+        self.assertNotIn("Fingerprint:", out)
+
+
 if __name__ == "__main__":
     unittest.main()

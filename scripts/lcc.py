@@ -274,6 +274,25 @@ def cmd_status(args):
     print(f"  Provider:      {p_name} ({p_model}){p_suffix}")
     print(f"               Last error: {err_str}")
 
+    if cfg.get("fileContextEnabled", False):
+        tagged = d.execute(
+            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        distinct = d.execute(
+            "SELECT COUNT(DISTINCT file_path) FROM messages "
+            "WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        cache_count = 0
+        try:
+            import file_context as fc
+            cache_count = len(fc._load_cache())
+        except Exception:
+            pass
+        print(
+            f"  Fingerprint:   {tagged} tagged messages across "
+            f"{distinct} files ({cache_count} cached)"
+        )
+
 
 def cmd_reindex(args):
     """Embed un-indexed messages for hybrid search."""
