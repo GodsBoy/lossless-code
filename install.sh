@@ -22,15 +22,23 @@ echo "  [ok] Created $LOSSLESS_HOME"
 
 # ── 2. Copy scripts ────────────────────────────────────────────────────
 
-cp "$SCRIPT_DIR/scripts/db.py"                "$LOSSLESS_HOME/scripts/"
+# db is a package (scripts/db/) — remove any legacy db.py from older installs
+# then sync the package directory fresh so removed submodules don't linger.
+rm -f "$LOSSLESS_HOME/scripts/db.py"
+rm -rf "$LOSSLESS_HOME/scripts/db"
+cp -r "$SCRIPT_DIR/scripts/db"                "$LOSSLESS_HOME/scripts/db"
+rm -rf "$LOSSLESS_HOME/scripts/db/__pycache__"
+
 cp "$SCRIPT_DIR/scripts/summarise.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/inject_context.py"    "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/file_context.py"      "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/lcc.py"               "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/lcc"                  "$LOSSLESS_HOME/scripts/"
 chmod +x "$LOSSLESS_HOME/scripts/lcc"
-cp "$SCRIPT_DIR/scripts/hook_stop.py"         "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/hook_stop.py"          "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_session_start.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_store_message.py" "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/hook_store_tool_call.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/dream.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/embed.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_embed.py"        "$LOSSLESS_HOME/scripts/"
@@ -112,7 +120,7 @@ fi
 # ── 7. Copy hooks ───────────────────────────────────────────────────────
 
 mkdir -p "$LOSSLESS_HOME/hooks"
-for hook in stop.sh session_start.sh user_prompt_submit.sh pre_compact.sh post_compact.sh; do
+for hook in stop.sh session_start.sh user_prompt_submit.sh pre_compact.sh post_compact.sh pre_tool_use.sh post_tool_use.sh; do
     cp "$SCRIPT_DIR/hooks/$hook" "$LOSSLESS_HOME/hooks/$hook"
     chmod +x "$LOSSLESS_HOME/hooks/$hook"
 done
@@ -174,6 +182,23 @@ lcc_hooks = {
             "type": "command",
             "command": f"{hooks_dir}/post_compact.sh",
             "timeout": 10
+        }]
+    }],
+    # PreToolUse/PostToolUse power the fingerprint file-context feature.
+    # Both are gated on fileContextEnabled (default false) in config.json,
+    # so registering them here is a no-op until the flag flips.
+    "PreToolUse": [{
+        "hooks": [{
+            "type": "command",
+            "command": f"{hooks_dir}/pre_tool_use.sh",
+            "timeout": 5
+        }]
+    }],
+    "PostToolUse": [{
+        "hooks": [{
+            "type": "command",
+            "command": f"{hooks_dir}/post_tool_use.sh",
+            "timeout": 5
         }]
     }]
 }
@@ -315,7 +340,7 @@ echo "lossless-code installed successfully!"
 echo ""
 echo "Commands available: lcc, lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc_dream, lcc-tui"
 echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
-echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact"
+echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact, PreToolUse, PostToolUse"
 echo ""
 echo "Optional — Semantic Search (hybrid FTS5 + vector):"
 echo "  pip install fastembed                       # local ONNX embeddings (~200 MB)"
