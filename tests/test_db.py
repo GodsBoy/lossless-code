@@ -40,6 +40,16 @@ class TestDatabase(unittest.TestCase):
         for expected in ["sessions", "messages", "summaries", "summary_sources"]:
             self.assertIn(expected, tables)
 
+    def test_import_surface_matches_all(self):
+        """Every name in db.__all__ must resolve on the package.
+
+        Locks in the flat-namespace contract: callers use ``import db; db.foo()``
+        and a future refactor that silently drops a re-export would break them
+        only at runtime. Cheap regression guard for the db package split.
+        """
+        missing = [name for name in db.__all__ if not hasattr(db, name)]
+        self.assertEqual(missing, [], f"db.__all__ references missing names: {missing}")
+
     def test_fts_tables_exist(self):
         conn = db.get_db()
         tables = [

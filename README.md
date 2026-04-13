@@ -249,7 +249,7 @@ If you need to register the MCP server manually:
                             6 tools
 ```
 
-The MCP server is **read-only**. All writes to the vault happen through hooks (SessionStart, Stop, UserPromptSubmit, PreCompact, PostCompact). The MCP server imports `db.py` directly for SQLite access.
+The MCP server is **read-only**. All writes to the vault happen through hooks (SessionStart, Stop, UserPromptSubmit, PreCompact, PostCompact). The MCP server imports the `db` package (`scripts/db/`) directly for SQLite access.
 
 ## Commands
 
