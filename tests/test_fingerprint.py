@@ -246,6 +246,62 @@ class TestGetSummariesForFile(unittest.TestCase):
         self.assertEqual(out, [])
 
 
+class TestFormatFileFingerprint(unittest.TestCase):
+    """PR-B/6 — format_file_fingerprint rendering and truncation."""
+
+    @classmethod
+    def setUpClass(cls):
+        import inject_context
+        cls.fmt = staticmethod(inject_context.format_file_fingerprint)
+
+    def _summary(self, content, kind="edited", created_at=1_700_000_000):
+        return {"content": content, "kind": kind, "created_at": created_at}
+
+    def test_empty_summaries_returns_empty_string(self):
+        self.assertEqual(self.fmt("foo.py", []), "")
+
+    def test_basic_shape(self):
+        out = self.fmt(
+            "src/foo.py",
+            [self._summary("Refactored auth middleware"), self._summary("Added tests")],
+        )
+        self.assertIn("[lcc] src/foo.py", out)
+        self.assertIn("2 prior summaries", out)
+        self.assertIn("polarity:", out)
+        self.assertIn("topics:", out)
+        self.assertIn('lcc_expand', out)
+        self.assertIn('"file": "src/foo.py"', out)
+
+    def test_polarity_counts(self):
+        out = self.fmt(
+            "a.py",
+            [
+                self._summary("x", kind="edited"),
+                self._summary("y", kind="edited"),
+                self._summary("z", kind="discussed"),
+            ],
+        )
+        self.assertIn("edited×2", out)
+        self.assertIn("discussed×1", out)
+
+    def test_unknown_polarity_when_no_kinds(self):
+        out = self.fmt(
+            "a.py", [self._summary("x", kind=None), self._summary("y", kind=None)]
+        )
+        self.assertIn("polarity: unknown", out)
+
+    def test_truncation_preserves_file_path_and_expand(self):
+        # Force over-budget: many summaries with long topics.
+        summaries = [
+            self._summary("A really long first line " + ("word " * 20), kind="edited")
+            for _ in range(10)
+        ]
+        out = self.fmt("very/long/path/to/file.py", summaries, token_budget=40)
+        self.assertIn("[lcc] very/long/path/to/file.py", out)
+        self.assertIn("lcc_expand", out)
+        self.assertIn('"file": "very/long/path/to/file.py"', out)
+
+
 class TestPolarityClassification(unittest.TestCase):
     """PR-B/4 — classify_chunk_polarity covers all categories."""
 
