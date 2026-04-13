@@ -81,7 +81,9 @@ TOOLS = [
         name="lcc_expand",
         description=(
             "Expand a summary ID back to its source messages and child "
-            "summaries. Traverses the DAG to show what was compressed."
+            "summaries. Traverses the DAG to show what was compressed. "
+            "Pass `file` instead of `summary_id` to list the most recent "
+            "summaries linked to a file path (requires fileContextEnabled)."
         ),
         inputSchema={
             "type": "object",
@@ -90,13 +92,22 @@ TOOLS = [
                     "type": "string",
                     "description": "Summary ID to expand (e.g. sum_abc123def456)",
                 },
+                "file": {
+                    "type": "string",
+                    "description": "File path to expand — returns recent summaries that mention it",
+                },
                 "full": {
                     "type": "boolean",
                     "description": "Show full content without truncation (default false)",
                     "default": False,
                 },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max summaries when expanding by file (default 3)",
+                    "default": 3,
+                },
             },
-            "required": ["summary_id"],
+            "required": [],
         },
     ),
     Tool(
@@ -217,6 +228,26 @@ def _do_grep(query: str, limit: int = 20) -> str:
     return "\n".join(parts)
 
 
+def _do_expand_file(file_path: str, limit: int = 3, full: bool = False) -> str:
+    cfg = db.load_config()
+    if not cfg.get("fileContextEnabled", False):
+        return "lcc_expand by file requires fileContextEnabled=true in config."
+    summaries = db.get_summaries_for_file(file_path, limit=limit)
+    if not summaries:
+        return f"No summaries reference {file_path}."
+    parts = [f"=== Summaries for {file_path} ({len(summaries)}) ==="]
+    for s in summaries:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["created_at"]))
+        kind = s.get("kind") or "?"
+        content = s["content"]
+        if len(content) > 500 and not full:
+            content = content[:500] + "..."
+        parts.append(
+            f"[{ts}] (depth-{s['depth']}, {kind}, {s['id']}) {content}\n"
+        )
+    return "\n".join(parts)
+
+
 def _do_expand(summary_id: str, full: bool = False) -> str:
     summary = db.get_summary(summary_id)
     if not summary:
@@ -309,6 +340,27 @@ def _do_status() -> str:
     vault_size = os.path.getsize(str(db.VAULT_DB)) if db.VAULT_DB.exists() else 0
     vault_mb = vault_size / (1024 * 1024)
 
+    cfg = db.load_config()
+    fp_line = ""
+    if cfg.get("fileContextEnabled", False):
+        tagged = d.execute(
+            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        distinct = d.execute(
+            "SELECT COUNT(DISTINCT file_path) FROM messages "
+            "WHERE file_path IS NOT NULL"
+        ).fetchone()[0]
+        cache_count = 0
+        try:
+            import file_context as fc
+            cache_count = len(fc._load_cache())
+        except Exception:
+            pass
+        fp_line = (
+            f"\n  Fingerprint:   {tagged} tagged messages across "
+            f"{distinct} files ({cache_count} cached)"
+        )
+
     # Provider info (MCP parity with CLI status)
     pinfo = summarise_mod.get_provider_info()
     p_name = pinfo.get("provider") or "none"
@@ -324,6 +376,7 @@ def _do_status() -> str:
         f"  Summaries:     {sum_count} (max depth: {max_depth})\n"
         f"  Provider:      {p_name} ({p_model}){p_suffix}\n"
         f"               Last error: {p_err}"
+        f"{fp_line}"
     )
 
 
@@ -336,10 +389,19 @@ async def call_tool(name: str, arguments: dict):
                 limit=arguments.get("limit", 20),
             )
         elif name == "lcc_expand":
-            text = _do_expand(
-                summary_id=arguments["summary_id"],
-                full=arguments.get("full", False),
-            )
+            if arguments.get("file"):
+                text = _do_expand_file(
+                    file_path=arguments["file"],
+                    limit=arguments.get("limit", 3),
+                    full=arguments.get("full", False),
+                )
+            elif arguments.get("summary_id"):
+                text = _do_expand(
+                    summary_id=arguments["summary_id"],
+                    full=arguments.get("full", False),
+                )
+            else:
+                text = "lcc_expand requires either `summary_id` or `file`."
         elif name == "lcc_context":
             text = _do_context(
                 query=arguments.get("query", ""),

@@ -44,6 +44,8 @@ DEFAULT_CONFIG = {
     "vectorWeight": 1.0,
     "lastEmbeddingModel": None,
     "vectorBackend": "auto",
+    # Fingerprint file context (v1.3.0, default off)
+    "fileContextEnabled": False,
 }
 
 

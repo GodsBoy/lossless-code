@@ -11,16 +11,22 @@ def store_message(
     turn_id: str = "",
     tool_name: str = "",
     working_dir: str = "",
+    file_path: Optional[str] = None,
 ) -> int:
-    """Insert a message and return its id."""
+    """Insert a message and return its id.
+
+    ``file_path`` tags the message with the file that a tool call touched
+    (Read/Edit/Write/MultiEdit/NotebookEdit). Repo-relative when the path
+    lies under ``working_dir``, absolute otherwise. None for non-file messages.
+    """
     from . import get_db
     db = get_db()
     now = int(time.time())
     cur = db.execute(
         """INSERT INTO messages
-           (session_id, turn_id, role, content, tool_name, working_dir, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (session_id, turn_id, role, content, tool_name, working_dir, now),
+           (session_id, turn_id, role, content, tool_name, working_dir, timestamp, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, turn_id, role, content, tool_name, working_dir, now, file_path),
     )
     db.commit()
     return cur.lastrowid

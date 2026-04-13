@@ -65,6 +65,113 @@ def _load_dream_patterns(working_dir: str = "", config: dict = None) -> str:
     return combined
 
 
+_CONTROL_CHARS = "".join(chr(c) for c in range(0x20) if c not in (0x09,))
+
+
+def _sanitize_for_context(value: str, max_len: int = 256) -> str:
+    """Strip newlines and control characters, cap length.
+
+    The fingerprint string is injected verbatim into Claude's
+    ``additionalContext``. A crafted file path or summary line
+    containing newlines could inject extra instructions — treat
+    every interpolated value as untrusted.
+    """
+    if not value:
+        return ""
+    cleaned = value.replace("\r", " ").replace("\n", " ")
+    for ch in _CONTROL_CHARS:
+        cleaned = cleaned.replace(ch, " ")
+    cleaned = cleaned.strip()
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1] + "…"
+    return cleaned
+
+
+def format_file_fingerprint(
+    file_path: str,
+    summaries: list[dict],
+    token_budget: int = 200,
+) -> str:
+    """
+    Render a compact fingerprint of prior vault activity on ``file_path``.
+
+    Output shape::
+
+        [lcc] {file_path} — {N} prior summaries, last touched {date},
+           polarity: {polarity_counts},
+           topics: {topics}.
+           Expand: call MCP tool `lcc_expand` with {"file": "{file_path}"}
+
+    Returns an empty string when there are no summaries. The output is
+    bounded to ~``token_budget`` tokens (rough 4-chars-per-token heuristic).
+    Truncation order when over budget: topics 5 → 3, then drop the
+    "last touched" clause. ``file_path`` and the Expand line are never
+    truncated — they are the load-bearing content for agents.
+    """
+    if not summaries:
+        return ""
+
+    from collections import Counter
+    from datetime import datetime
+
+    file_path = _sanitize_for_context(file_path, max_len=256)
+    n = len(summaries)
+
+    # Last touched: newest created_at across the summaries.
+    latest = max((s.get("created_at") or 0) for s in summaries)
+    last_touched = ""
+    if latest:
+        last_touched = datetime.fromtimestamp(latest).strftime("%Y-%m-%d")
+
+    # Polarity counts: "edited×2, discussed×1".
+    kinds = [s.get("kind") for s in summaries if s.get("kind")]
+    if kinds:
+        counts = Counter(kinds)
+        polarity = ", ".join(f"{k}×{v}" for k, v in counts.most_common())
+    else:
+        polarity = "unknown"
+
+    # Topics: first few words from each summary's content, dedup-ordered.
+    def _topic(content: str) -> str:
+        first_line = (content or "").strip().split("\n", 1)[0]
+        words = first_line.split()
+        return _sanitize_for_context(" ".join(words[:6]), max_len=120)
+
+    seen = set()
+    raw_topics = []
+    for s in summaries:
+        t = _topic(s.get("content", ""))
+        if t and t not in seen:
+            seen.add(t)
+            raw_topics.append(t)
+
+    max_chars = token_budget * 4
+    expand_line = (
+        f'   Expand: call MCP tool `lcc_expand` with {{"file": "{file_path}"}}'
+    )
+
+    def _render(topics_limit: int, include_last_touched: bool) -> str:
+        topics = raw_topics[:topics_limit]
+        topics_str = "; ".join(topics) if topics else "none"
+        parts = [f"[lcc] {file_path} — {n} prior summaries"]
+        if include_last_touched and last_touched:
+            parts.append(f"last touched {last_touched}")
+        parts.append(f"polarity: {polarity}")
+        parts.append(f"topics: {topics_str}")
+        header = ", ".join(parts) + "."
+        return f"{header}\n{expand_line}"
+
+    # Budget ladder: 5 topics + date → 3 topics + date → 3 topics, no date.
+    for topics_limit, include_date in ((5, True), (3, True), (3, False)):
+        out = _render(topics_limit, include_date)
+        if len(out) <= max_chars:
+            return out
+
+    # Hard floor: always return the file_path + Expand line intact, even if
+    # that means dropping topics entirely.
+    return f"[lcc] {file_path} — {n} prior summaries, polarity: {polarity}.\n{expand_line}"
+
+
 def get_handoff(session_id: str = None) -> str:
     """Get handoff text from the most recent session (or a specific one)."""
     if session_id:

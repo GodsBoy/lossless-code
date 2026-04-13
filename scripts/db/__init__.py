@@ -61,6 +61,24 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("ALTER TABLE sessions ADD COLUMN stateless INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass  # Column already exists
+    # Migration: add file_path column to messages (fingerprint file context)
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN file_path TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    # Migration: add kind column to summaries (polarity classification)
+    try:
+        _conn.execute("ALTER TABLE summaries ADD COLUMN kind TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_file_path "
+        "ON messages(file_path) WHERE file_path IS NOT NULL"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_summary_sources_source "
+        "ON summary_sources(source_type, source_id)"
+    )
     _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_summaries_depth_consolidated "
         "ON summaries(depth, consolidated)"
@@ -137,6 +155,7 @@ from .summaries import (
     get_summaries_by_ids,
     get_overlapping_summaries,
     mark_consolidated,
+    get_summaries_for_file,
     get_max_summary_depth,
 )
 from .search import escape_fts5_query, search_messages, search_summaries, search_all
@@ -194,6 +213,7 @@ __all__ = [
     "get_summaries_by_ids",
     "get_overlapping_summaries",
     "mark_consolidated",
+    "get_summaries_for_file",
     "get_max_summary_depth",
     # Search
     "escape_fts5_query",
