@@ -156,5 +156,46 @@ class TestHookStoreToolCall(unittest.TestCase):
             self.assertTrue(os.path.isabs(out))
 
 
+class TestPolarityClassification(unittest.TestCase):
+    """PR-B/4 — classify_chunk_polarity covers all categories."""
+
+    @classmethod
+    def setUpClass(cls):
+        import summarise
+        cls.classify = staticmethod(summarise.classify_chunk_polarity)
+
+    def _tool(self, name, path="foo.py"):
+        return {"role": "tool", "tool_name": name, "file_path": path}
+
+    def test_none_when_no_file_tools(self):
+        chunk = [{"role": "user", "content": "hi"}]
+        self.assertIsNone(self.classify(chunk))
+
+    def test_created_for_write(self):
+        self.assertEqual(self.classify([self._tool("Write")]), "created")
+
+    def test_edited_for_edit(self):
+        self.assertEqual(self.classify([self._tool("Edit")]), "edited")
+
+    def test_edited_for_multiedit(self):
+        self.assertEqual(self.classify([self._tool("MultiEdit")]), "edited")
+
+    def test_discussed_for_read_only(self):
+        self.assertEqual(
+            self.classify([self._tool("Read"), self._tool("Read", "bar.py")]),
+            "discussed",
+        )
+
+    def test_mixed_when_create_and_edit(self):
+        self.assertEqual(
+            self.classify([self._tool("Write"), self._tool("Edit", "bar.py")]),
+            "mixed",
+        )
+
+    def test_ignores_file_tools_without_file_path(self):
+        chunk = [{"role": "tool", "tool_name": "Read", "file_path": None}]
+        self.assertIsNone(self.classify(chunk))
+
+
 if __name__ == "__main__":
     unittest.main()

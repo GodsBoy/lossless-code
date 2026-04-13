@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Optional
 
 # Ensure scripts/ is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -534,6 +535,51 @@ def _compute_dynamic_chunk_size(cfg: dict, pending_count: int) -> int:
     return working
 
 
+def classify_chunk_polarity(messages: list[dict]) -> Optional[str]:
+    """
+    Classify a chunk of messages by the dominant tool-call polarity on files.
+
+    Returns one of ``'created' | 'edited' | 'deleted' | 'discussed' | 'mixed'``
+    or ``None`` when the chunk has no file-tagged tool calls.
+
+    Polarity rules:
+    - Any Write → created (unless other file tools dominate)
+    - Any Edit / MultiEdit / NotebookEdit → edited
+    - Read-only → discussed
+    - Mix of Write + Edit → mixed
+    - No file tools → None
+
+    The summary-level ``kind`` is mandatory (plan requirement R6a) so that the
+    fingerprint formatter can always surface a polarity tag without walking
+    back to the leaf messages.
+    """
+    created = False
+    edited = False
+    read_only = False
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        if not m.get("file_path"):
+            continue
+        tool = m.get("tool_name") or ""
+        if tool == "Write":
+            created = True
+        elif tool in ("Edit", "MultiEdit", "NotebookEdit"):
+            edited = True
+        elif tool == "Read":
+            read_only = True
+
+    if created and edited:
+        return "mixed"
+    if created:
+        return "created"
+    if edited:
+        return "edited"
+    if read_only:
+        return "discussed"
+    return None
+
+
 def summarise_messages(session_id: str = None) -> int:
     """
     Run depth-0 summarisation on unsummarised messages.
@@ -573,6 +619,7 @@ def summarise_messages(session_id: str = None) -> int:
             source_ids=source_ids,
             session_id=sid,
             token_count=token_count,
+            kind=classify_chunk_polarity(chunk),
         )
         db.mark_summarised([m["id"] for m in chunk])
         created += 1
@@ -618,6 +665,16 @@ def cascade_summaries(session_id: str = None) -> int:
             chunk_sessions = set(s["session_id"] for s in chunk if s["session_id"])
             sid = chunk_sessions.pop() if len(chunk_sessions) == 1 else None
 
+            # Propagate polarity from children: single kind passes through,
+            # multiple distinct kinds collapse to 'mixed', all None stays None.
+            child_kinds = {s.get("kind") for s in chunk if s.get("kind")}
+            if not child_kinds:
+                cascade_kind = None
+            elif len(child_kinds) == 1:
+                cascade_kind = child_kinds.pop()
+            else:
+                cascade_kind = "mixed"
+
             db.store_summary(
                 summary_id=summary_id,
                 content=summary_text,
@@ -625,6 +682,7 @@ def cascade_summaries(session_id: str = None) -> int:
                 source_ids=source_ids,
                 session_id=sid,
                 token_count=token_count,
+                kind=cascade_kind,
             )
             created += 1
 

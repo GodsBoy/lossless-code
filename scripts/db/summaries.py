@@ -16,19 +16,22 @@ def store_summary(
     source_ids: list[tuple[str, str]],
     session_id: Optional[str] = None,
     token_count: Optional[int] = None,
+    kind: Optional[str] = None,
 ) -> None:
     """
     Write a summary node and its source links.
 
     source_ids: list of (source_type, source_id) — e.g. ('message', '42')
+    kind: polarity classification for file-context fingerprinting
+          ('created' | 'edited' | 'deleted' | 'discussed' | 'mixed' | None)
     """
     from . import get_db
     db = get_db()
     now = int(time.time())
     db.execute(
-        """INSERT INTO summaries (id, session_id, content, depth, token_count, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (summary_id, session_id, content, depth, token_count, now),
+        """INSERT INTO summaries (id, session_id, content, depth, token_count, created_at, kind)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (summary_id, session_id, content, depth, token_count, now, kind),
     )
     db.executemany(
         "INSERT INTO summary_sources (summary_id, source_type, source_id) VALUES (?, ?, ?)",
