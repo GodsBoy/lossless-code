@@ -63,6 +63,28 @@ def cmd_grep(args):
 
 def cmd_expand(args):
     """Expand a summary node to its source messages/summaries."""
+    if getattr(args, "file", None):
+        cfg = db.load_config()
+        if not cfg.get("fileContextEnabled", False):
+            print("lcc expand --file requires fileContextEnabled=true in config.")
+            return
+        summaries = db.get_summaries_for_file(args.file, limit=args.limit)
+        if not summaries:
+            print(f"No summaries reference {args.file}.")
+            return
+        print(f"=== Summaries for {args.file} ({len(summaries)}) ===\n")
+        for s in summaries:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["created_at"]))
+            kind = s.get("kind") or "?"
+            content = s["content"]
+            if len(content) > 500 and not args.full:
+                content = content[:500] + "..."
+            print(f"[{ts}] (depth-{s['depth']}, {kind}, {s['id']}) {content}\n")
+        return
+
+    if not args.summary_id:
+        print("Provide a summary_id or --file <path>.")
+        return
     summary = db.get_summary(args.summary_id)
     if not summary:
         print(f"Summary not found: {args.summary_id}")
@@ -297,7 +319,20 @@ def main():
 
     # expand
     p_expand = sub.add_parser("expand", help="Expand a summary node")
-    p_expand.add_argument("summary_id", help="Summary ID (e.g. sum_abc123)")
+    p_expand.add_argument(
+        "summary_id",
+        nargs="?",
+        default=None,
+        help="Summary ID (e.g. sum_abc123) — omit when using --file",
+    )
+    p_expand.add_argument(
+        "--file",
+        default=None,
+        help="File path to expand — lists recent summaries that mention it",
+    )
+    p_expand.add_argument(
+        "--limit", type=int, default=3, help="Max summaries when using --file"
+    )
     p_expand.add_argument("--full", action="store_true", help="Show full content")
     p_expand.set_defaults(func=cmd_expand)
 

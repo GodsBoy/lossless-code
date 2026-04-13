@@ -343,5 +343,67 @@ class TestPolarityClassification(unittest.TestCase):
         self.assertIsNone(self.classify(chunk))
 
 
+class TestExpandByFile(unittest.TestCase):
+    """PR-B/8 — lcc_expand accepts a `file` param (MCP + CLI parity)."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.get_db()
+        cfg = db.load_config()
+        cfg["fileContextEnabled"] = True
+        db.save_config(cfg)
+        db.ensure_session("expand-file-session", "/tmp/exp")
+        mid = db.store_message(
+            session_id="expand-file-session",
+            role="tool",
+            content="Edit: expand.py (ok)",
+            tool_name="Edit",
+            working_dir="/tmp/exp",
+            file_path="expand.py",
+        )
+        cls.sid = db.gen_summary_id()
+        db.store_summary(
+            summary_id=cls.sid,
+            content="Rewrote expand.py signature handling",
+            depth=0,
+            source_ids=[("message", str(mid))],
+            kind="edited",
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cfg = db.load_config()
+        cfg["fileContextEnabled"] = False
+        db.save_config(cfg)
+
+    def test_mcp_do_expand_file_returns_summaries(self):
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(__file__), "..", "mcp")
+        )
+        import server as mcp_server
+        out = mcp_server._do_expand_file("expand.py", limit=5)
+        self.assertIn("expand.py", out)
+        self.assertIn(self.sid, out)
+        self.assertIn("edited", out)
+
+    def test_mcp_do_expand_file_unknown(self):
+        import server as mcp_server
+        out = mcp_server._do_expand_file("nothing.py")
+        self.assertIn("No summaries", out)
+
+    def test_mcp_do_expand_file_gated_on_flag(self):
+        import server as mcp_server
+        cfg = db.load_config()
+        cfg["fileContextEnabled"] = False
+        db.save_config(cfg)
+        try:
+            out = mcp_server._do_expand_file("expand.py")
+            self.assertIn("fileContextEnabled", out)
+        finally:
+            cfg["fileContextEnabled"] = True
+            db.save_config(cfg)
+
+
 if __name__ == "__main__":
     unittest.main()
