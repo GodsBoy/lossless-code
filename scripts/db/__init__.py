@@ -155,6 +155,7 @@ from .summaries import (
     get_summaries_by_ids,
     get_overlapping_summaries,
     mark_consolidated,
+    get_summaries_for_file,
     get_max_summary_depth,
 )
 from .search import escape_fts5_query, search_messages, search_summaries, search_all
@@ -212,6 +213,7 @@ __all__ = [
     "get_summaries_by_ids",
     "get_overlapping_summaries",
     "mark_consolidated",
+    "get_summaries_for_file",
     "get_max_summary_depth",
     # Search
     "escape_fts5_query",

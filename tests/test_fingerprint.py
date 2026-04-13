@@ -156,6 +156,96 @@ class TestHookStoreToolCall(unittest.TestCase):
             self.assertTrue(os.path.isabs(out))
 
 
+class TestGetSummariesForFile(unittest.TestCase):
+    """PR-B/5 — recursive CTE walks summary_sources upward from messages."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.get_db()
+
+    def _seed(self, file_path: str):
+        db.ensure_session("cte-session", "/tmp/cte")
+        mid = db.store_message(
+            session_id="cte-session",
+            role="tool",
+            content=f"Read: {file_path} (ok)",
+            tool_name="Read",
+            working_dir="/tmp/cte",
+            file_path=file_path,
+        )
+        return mid
+
+    def test_direct_leaf_summary(self):
+        mid = self._seed("direct.py")
+        sid = db.gen_summary_id()
+        db.store_summary(
+            summary_id=sid,
+            content="summary of direct.py read",
+            depth=0,
+            source_ids=[("message", str(mid))],
+            kind="discussed",
+        )
+        out = db.get_summaries_for_file("direct.py", limit=5)
+        ids = [s["id"] for s in out]
+        self.assertIn(sid, ids)
+
+    def test_walks_up_one_level(self):
+        mid = self._seed("walk.py")
+        leaf = db.gen_summary_id()
+        db.store_summary(
+            summary_id=leaf,
+            content="leaf",
+            depth=0,
+            source_ids=[("message", str(mid))],
+            kind="discussed",
+        )
+        parent = db.gen_summary_id()
+        db.store_summary(
+            summary_id=parent,
+            content="parent",
+            depth=1,
+            source_ids=[("summary", leaf)],
+            kind="discussed",
+        )
+        out = db.get_summaries_for_file("walk.py", limit=5)
+        ids = [s["id"] for s in out]
+        self.assertIn(leaf, ids)
+        self.assertIn(parent, ids)
+
+    def test_excludes_consolidated(self):
+        mid = self._seed("consol.py")
+        sid = db.gen_summary_id()
+        db.store_summary(
+            summary_id=sid,
+            content="merged away",
+            depth=0,
+            source_ids=[("message", str(mid))],
+            kind="discussed",
+        )
+        db.mark_consolidated([sid])
+        out = db.get_summaries_for_file("consol.py", limit=5)
+        ids = [s["id"] for s in out]
+        self.assertNotIn(sid, ids)
+
+    def test_limit_respected(self):
+        mid = self._seed("limit.py")
+        for _ in range(5):
+            db.store_summary(
+                summary_id=db.gen_summary_id(),
+                content="s",
+                depth=0,
+                source_ids=[("message", str(mid))],
+                kind="discussed",
+            )
+        out = db.get_summaries_for_file("limit.py", limit=3)
+        self.assertLessEqual(len(out), 3)
+
+    def test_unknown_file_returns_empty(self):
+        out = db.get_summaries_for_file("nothing-touched-me.py", limit=3)
+        self.assertEqual(out, [])
+
+
 class TestPolarityClassification(unittest.TestCase):
     """PR-B/4 — classify_chunk_polarity covers all categories."""
 

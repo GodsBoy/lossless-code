@@ -205,6 +205,55 @@ def mark_consolidated(summary_ids: list[str]) -> None:
     db.commit()
 
 
+def get_summaries_for_file(file_path: str, limit: int = 3) -> list[dict]:
+    """
+    Return up to ``limit`` summaries that cover any message tagged with
+    ``file_path``.
+
+    Walks ``summary_sources`` upward from leaf messages to ancestor summaries
+    using a recursive CTE with a ``hop < 16`` ceiling (safety bound — the DAG
+    is shallow in practice). Consolidated summaries are excluded so only
+    active nodes surface in file fingerprints.
+
+    The leaf join casts ``source_id`` to INTEGER because ``messages.id`` is
+    INTEGER while ``summary_sources.source_id`` is TEXT (the DAG stores both
+    summary and message references in one column).
+    """
+    from . import get_db
+    db = get_db()
+    rows = db.execute(
+        """
+        WITH RECURSIVE ancestors(summary_id, hop) AS (
+            -- Seed: direct summaries of messages that touched this file
+            SELECT ss.summary_id, 0
+            FROM summary_sources ss
+            JOIN messages m
+              ON ss.source_type = 'message'
+             AND CAST(ss.source_id AS INTEGER) = m.id
+            WHERE m.file_path = ?
+
+            UNION
+
+            -- Walk: parents whose children are in the current frontier
+            SELECT ss.summary_id, a.hop + 1
+            FROM ancestors a
+            JOIN summary_sources ss
+              ON ss.source_type = 'summary'
+             AND ss.source_id = a.summary_id
+            WHERE a.hop < 16
+        )
+        SELECT s.*
+        FROM summaries s
+        JOIN ancestors a ON a.summary_id = s.id
+        WHERE COALESCE(s.consolidated, 0) = 0
+        ORDER BY s.created_at DESC
+        LIMIT ?
+        """,
+        (file_path, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_max_summary_depth() -> int:
     """Return the maximum summary depth in the vault."""
     from . import get_db
@@ -225,5 +274,6 @@ __all__ = [
     "get_summaries_by_ids",
     "get_overlapping_summaries",
     "mark_consolidated",
+    "get_summaries_for_file",
     "get_max_summary_depth",
 ]
