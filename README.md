@@ -358,6 +358,8 @@ Full reference: [docs/tui.md](docs/tui.md)
 | `user_prompt_submit.sh` | UserPromptSubmit | Surface relevant context for the prompt (BM25-ranked) |
 | `pre_compact.sh` | PreCompact | Run DAG summarisation before compaction |
 | `post_compact.sh` | PostCompact | Record compaction, re-inject top summaries |
+| `pre_tool_use.sh` | PreToolUse | Inject file-context fingerprint before `Read`/`Edit`/`Write` tools (opt-in, see [fingerprint file context](#fingerprint-file-context)) |
+| `post_tool_use.sh` | PostToolUse | Record which file a tool call touched, so fingerprints can surface later |
 
 ### DAG Summarisation
 
@@ -452,6 +454,33 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
              #       "Embeddings: 4,231 / 4,400 messages indexed (169 pending)"
 ```
 
+### Fingerprint file context
+
+When an agent is about to read or edit a file, lossless-code can surface a compact fingerprint of what the vault already knows about that path — prior summaries, last touched date, polarity (created/edited/discussed/mixed), and topic snippets — injected as `additionalContext` via the PreToolUse hook. An agent that already has recall is less likely to repeat past mistakes on the same file.
+
+**Default off.** Flip the flag in `~/.lossless-code/config.json`:
+
+```json
+{"fileContextEnabled": true}
+```
+
+While off, the PreToolUse and PostToolUse hooks return immediately and the feature adds zero latency.
+
+**How it works:**
+
+1. PostToolUse records which file each `Read | Edit | Write | MultiEdit | NotebookEdit` call touched (stored on `messages.file_path`)
+2. DAG summarisation tags summaries with a `kind` — `created | edited | discussed | mixed` — based on the tool calls in the chunk
+3. PreToolUse walks `summary_sources` upward from the target file to ancestor summaries via a recursive CTE, renders a ~200-token fingerprint line, and caches it under `~/.lossless-code/cache/file_fingerprints.json` (60s TTL, file-locked reads/writes, single-flight guard)
+4. Cold path opens `vault.db` read-only so the hook never blocks the writer
+5. `lcc_expand --file <path>` (CLI) and `{"file": "..."}` (MCP) drill from a file path to the full recent summaries
+
+**Check status:**
+
+```bash
+lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cached)"
+             # (only displayed when fileContextEnabled is on)
+```
+
 ### Storage
 
 ```
@@ -460,6 +489,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
   config.json    # Settings (summary model, thresholds, dream config)
   scripts/       # Python modules and CLI tools
   hooks/         # Shell scripts called by Claude Code hooks
+  cache/         # JSON cache for file-context fingerprints (when enabled)
   dream/         # Dream output
     reports/     # Timestamped dream reports
     projects/    # Per-project pattern files (keyed by working dir hash)
@@ -522,6 +552,7 @@ lcc status   # shows "Vector search: active (fastembed, BAAI/bge-small-en-v1.5)"
 | `dreamTokenBudget` | `2000` | Max tokens for dream pattern injection on SessionStart |
 | `dreamBatchSize` | `100` | Summaries loaded per batch during dream cycle (prevents OOM) |
 | `contextTokenBudget` | `8000` | Max tokens for context injection (summaries + handoff + dreams). When a query is present, summaries are ranked by FTS5 BM25 relevance and packed greedily within this budget. Without a query, summaries are selected by DAG depth. Individual summaries are never truncated mid-content. |
+| `fileContextEnabled` | `false` | Master switch for the [fingerprint file context](#fingerprint-file-context) feature. When off, the PreToolUse/PostToolUse hooks return immediately and no file paths are recorded. |
 
 **Session filtering:**
 
