@@ -65,6 +65,28 @@ def _load_dream_patterns(working_dir: str = "", config: dict = None) -> str:
     return combined
 
 
+_CONTROL_CHARS = "".join(chr(c) for c in range(0x20) if c not in (0x09,))
+
+
+def _sanitize_for_context(value: str, max_len: int = 256) -> str:
+    """Strip newlines and control characters, cap length.
+
+    The fingerprint string is injected verbatim into Claude's
+    ``additionalContext``. A crafted file path or summary line
+    containing newlines could inject extra instructions — treat
+    every interpolated value as untrusted.
+    """
+    if not value:
+        return ""
+    cleaned = value.replace("\r", " ").replace("\n", " ")
+    for ch in _CONTROL_CHARS:
+        cleaned = cleaned.replace(ch, " ")
+    cleaned = cleaned.strip()
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1] + "…"
+    return cleaned
+
+
 def format_file_fingerprint(
     file_path: str,
     summaries: list[dict],
@@ -92,6 +114,7 @@ def format_file_fingerprint(
     from collections import Counter
     from datetime import datetime
 
+    file_path = _sanitize_for_context(file_path, max_len=256)
     n = len(summaries)
 
     # Last touched: newest created_at across the summaries.
@@ -112,7 +135,7 @@ def format_file_fingerprint(
     def _topic(content: str) -> str:
         first_line = (content or "").strip().split("\n", 1)[0]
         words = first_line.split()
-        return " ".join(words[:6])
+        return _sanitize_for_context(" ".join(words[:6]), max_len=120)
 
     seen = set()
     raw_topics = []

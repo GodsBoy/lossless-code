@@ -244,8 +244,8 @@ def get_summaries_for_file(file_path: str, limit: int = 3) -> list[dict]:
         )
         SELECT s.*
         FROM summaries s
-        JOIN ancestors a ON a.summary_id = s.id
-        WHERE COALESCE(s.consolidated, 0) = 0
+        WHERE s.id IN (SELECT DISTINCT summary_id FROM ancestors)
+          AND COALESCE(s.consolidated, 0) = 0
         ORDER BY s.created_at DESC
         LIMIT ?
         """,
