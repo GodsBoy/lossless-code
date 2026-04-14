@@ -42,6 +42,7 @@ cp "$SCRIPT_DIR/scripts/hook_store_tool_call.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/dream.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/embed.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_embed.py"        "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/check_summariser_pollution.py" "$LOSSLESS_HOME/scripts/"
 echo "  [ok] Copied Python scripts to $LOSSLESS_HOME/scripts/"
 
 # ── 2b. Copy MCP server ──────────────────────────────────────────────────
