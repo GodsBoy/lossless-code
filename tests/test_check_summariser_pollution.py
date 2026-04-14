@@ -16,6 +16,13 @@ POLLUTING_LINE = (
     'commands and outputs"}}\n'
 )
 CLEAN_LINE = '{"type":"user","message":{"role":"user","content":"hello world"}}\n'
+# Legitimate session whose body happens to mention the needle (e.g. discussing
+# the bug). Must NOT be flagged.
+DISCUSSING_LINES = (
+    '{"type":"queue-operation","operation":"enqueue","content":"Analyze patterns"}\n'
+    '{"type":"user","message":{"role":"user","content":"hi, lets talk about pollution"}}\n'
+    '{"type":"assistant","message":{"role":"assistant","content":"the bug embeds Summarise the following conversation turns concisely in every session bucket"}}\n'
+)
 
 
 def _run(projects_dir: Path) -> subprocess.CompletedProcess:
@@ -79,6 +86,25 @@ class TestCheckSummariserPollution(unittest.TestCase):
     def test_missing_projects_dir_exits_0(self):
         result = _run(self.projects / "does-not-exist")
         self.assertEqual(result.returncode, 0)
+
+    def test_session_discussing_needle_not_flagged(self):
+        bucket = self.projects / "-root-foo"
+        _write_jsonl(bucket / "discussing.jsonl", DISCUSSING_LINES)
+        result = _run(self.projects)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("discussing.jsonl", result.stdout)
+
+    def test_polluting_with_content_blocks(self):
+        bucket = self.projects / "-root-foo"
+        body = (
+            '{"type":"user","message":{"role":"user","content":'
+            '[{"type":"text","text":"Summarise the following conversation turns concisely, preserving all key decisions"}]'
+            '}}\n'
+        )
+        _write_jsonl(bucket / "blocks.jsonl", body)
+        result = _run(self.projects)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("blocks.jsonl", result.stdout)
 
 
 if __name__ == "__main__":

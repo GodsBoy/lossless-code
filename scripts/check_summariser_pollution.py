@@ -13,16 +13,14 @@ Exit codes:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 
 LEGIT_BUCKET = "-root--lossless-code--cli-cwd"
-NEEDLE = (
-    b"Summarise the following conversation turns concisely, "
-    b"preserving all key decisions, facts, file paths, commands"
-)
-SCAN_BYTES = 8192
+NEEDLE = "Summarise the following conversation turns concisely"
+SCAN_LINES = 50
 
 
 def projects_dir() -> Path:
@@ -32,13 +30,50 @@ def projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+def _extract_text(content) -> str:
+    """Pull plain text out of a message content field that may be a string
+    or a list of content blocks (Anthropic message format)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                txt = block.get("text") or block.get("content") or ""
+                if isinstance(txt, str):
+                    parts.append(txt)
+        return "".join(parts)
+    return ""
+
+
 def file_is_polluting(path: Path) -> bool:
+    """A file is polluting iff its first user message's content text starts
+    with the summariser prompt. Substring-anywhere matches are too noisy
+    because legitimate sessions can mention the prompt in passing."""
     try:
-        with path.open("rb") as fh:
-            head = fh.read(SCAN_BYTES)
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= SCAN_LINES:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("type") != "user":
+                    continue
+                msg = rec.get("message") or {}
+                if not isinstance(msg, dict):
+                    return False
+                text = _extract_text(msg.get("content", "")).lstrip()
+                return text.startswith(NEEDLE)
     except OSError:
         return False
-    return NEEDLE in head
+    return False
 
 
 def find_polluting(root: Path) -> list[Path]:
