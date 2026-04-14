@@ -611,6 +611,8 @@ This is the highest-priority auto-detection option. If `claude` is on your PATH,
 Model examples: any model your subscription supports (`claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`)
 
 > **Note:** Each LLM call spawns a `claude --print` subprocess, which adds ~2-5s overhead per call compared to direct API access. For most users this is invisible (summarisation runs in hooks), but heavy users may prefer a direct API key for faster throughput.
+>
+> Subprocesses run with `cwd=~/.lossless-code/.cli-cwd` so their per-CWD session files land in their own project bucket and don't pollute your interactive `claude --resume` list.
 
 **Anthropic**
 

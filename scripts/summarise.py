@@ -318,6 +318,11 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
             # Strip ANTHROPIC_API_KEY so the CLI uses its own subscription auth
             env = os.environ.copy()
             env.pop("ANTHROPIC_API_KEY", None)
+            # Run in a dedicated CWD so Claude Code's per-CWD session files
+            # land in their own project bucket and don't pollute the user's
+            # interactive `claude --resume` list.
+            cli_cwd = os.path.expanduser("~/.lossless-code/.cli-cwd")
+            os.makedirs(cli_cwd, exist_ok=True)
             result = subprocess.run(
                 [cli_path, "--print", "--model", model],
                 input=cli_prompt,
@@ -325,6 +330,7 @@ def call_llm(prompt: str, cfg: dict, json_mode: bool = False) -> str:
                 text=True,
                 timeout=120,
                 env=env,
+                cwd=cli_cwd,
             )
             if result.returncode == 0 and result.stdout.strip():
                 _provider_state["consecutive_failures"] = 0
