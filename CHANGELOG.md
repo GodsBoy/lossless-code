@@ -64,7 +64,7 @@ re-running `install.sh`.
   of a flat recency cut, so high-signal older summaries survive
   eviction when the prompt actually references them.
 
-### Added — earlier in the v1.1.0 → v1.1.1 window
+### Added
 
 - **Session filtering for lossless-claw v0.7.0 parity**: stateless
   session gate, stop-hook filtering, plus DB-layer tests covering
@@ -81,10 +81,6 @@ re-running `install.sh`.
   `openaiBaseUrl`, plus provider auto-detection and structured error
   handling.
 - **`dream --status` flag** for inspecting dream-cycle state.
-- **`scripts/check_summariser_pollution.py`** stdlib regression detector
-  for the cwd pollution bug. Walks `~/.claude/projects/`, skips the
-  legitimate `-root--lossless-code--cli-cwd` bucket, exits non-zero
-  with a file list if any other bucket contains a polluting `.jsonl`.
 
 ## v1.1.0 — semantic search hybrid
 

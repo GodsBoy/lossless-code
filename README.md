@@ -612,7 +612,7 @@ Model examples: any model your subscription supports (`claude-haiku-4-5-20251001
 
 > **Note:** Each LLM call spawns a `claude --print` subprocess, which adds ~2-5s overhead per call compared to direct API access. For most users this is invisible (summarisation runs in hooks), but heavy users may prefer a direct API key for faster throughput.
 >
-> Subprocesses run with `cwd=~/.lossless-code/.cli-cwd` so their per-CWD session files land in their own project bucket and don't pollute your interactive `claude --resume` list.
+> Subprocesses run with `cwd=~/.lossless-code/.cli-cwd` so their per-CWD session files land in their own project bucket and don't pollute your interactive `claude --resume` list. To verify: `python3 scripts/check_summariser_pollution.py` (exit 0 = clean, 1 = polluting files listed).
 
 **Anthropic**
 

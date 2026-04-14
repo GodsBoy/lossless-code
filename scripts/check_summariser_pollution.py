@@ -17,9 +17,10 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
-LEGIT_BUCKET = "-root--lossless-code--cli-cwd"
-NEEDLE = "Summarise the following conversation turns concisely"
+LOSSLESS_CLI_CWD_BUCKET = "-root--lossless-code--cli-cwd"
+SUMMARISER_PROMPT_PREFIX = "Summarise the following conversation turns concisely"
 SCAN_LINES = 50
 
 
@@ -30,7 +31,7 @@ def projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
-def _extract_text(content) -> str:
+def _extract_text(content: Any) -> str:
     """Pull plain text out of a message content field that may be a string
     or a list of content blocks (Anthropic message format)."""
     if isinstance(content, str):
@@ -70,8 +71,9 @@ def file_is_polluting(path: Path) -> bool:
                 if not isinstance(msg, dict):
                     return False
                 text = _extract_text(msg.get("content", "")).lstrip()
-                return text.startswith(NEEDLE)
-    except OSError:
+                return text.startswith(SUMMARISER_PROMPT_PREFIX)
+    except OSError as exc:
+        print(f"warning: could not read {path}: {exc}", file=sys.stderr)
         return False
     return False
 
@@ -81,7 +83,7 @@ def find_polluting(root: Path) -> list[Path]:
         return []
     hits: list[Path] = []
     for bucket in sorted(root.iterdir()):
-        if not bucket.is_dir() or bucket.name == LEGIT_BUCKET:
+        if not bucket.is_dir() or bucket.name == LOSSLESS_CLI_CWD_BUCKET:
             continue
         for entry in bucket.rglob("*.jsonl"):
             if entry.is_file() and file_is_polluting(entry):
@@ -93,7 +95,7 @@ def main() -> int:
     hits = find_polluting(projects_dir())
     if not hits:
         return 0
-    print(f"Found {len(hits)} polluting jsonl file(s) outside {LEGIT_BUCKET}:")
+    print(f"Found {len(hits)} polluting jsonl file(s) outside {LOSSLESS_CLI_CWD_BUCKET}:")
     for path in hits:
         print(f"  {path}")
     return 1
