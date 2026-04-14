@@ -94,6 +94,20 @@ class TestCheckSummariserPollution(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("discussing.jsonl", result.stdout)
 
+    def test_polluting_in_nested_subdir_detected(self):
+        bucket = self.projects / "-root-foo"
+        _write_jsonl(bucket / "nested" / "deep" / "bad.jsonl", POLLUTING_LINE)
+        result = _run(self.projects)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bad.jsonl", result.stdout)
+
+    def test_non_dict_message_does_not_flag(self):
+        bucket = self.projects / "-root-foo"
+        body = '{"type":"user","message":"not a dict"}\n'
+        _write_jsonl(bucket / "weird.jsonl", body)
+        result = _run(self.projects)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_polluting_with_content_blocks(self):
         bucket = self.projects / "-root-foo"
         body = (
