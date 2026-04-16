@@ -262,6 +262,17 @@ else
 fi
 
 # ── 10. Register MCP server in ~/.claude.json ──────────────────────────
+#
+# Precedence model: when the lossless-code Claude Code plugin is installed,
+# the plugin registers its own project-scope MCP server via .mcp.json. A
+# user-scope registration from this script would create a conflicting
+# endpoint for the same server name (different commands, different OAuth
+# token scopes), which `claude /doctor` surfaces as a warning.
+#
+# Strategy: detect the plugin via ~/.claude/plugins/installed_plugins.json
+# and skip (or strip) the user-scope registration when the plugin is
+# present. Manual-install-only users (no plugin) continue to get the
+# user-scope registration so lossless-code works after one command.
 
 CLAUDE_JSON="$HOME/.claude.json"
 python3 << 'MCPEOF'
@@ -269,8 +280,22 @@ import json
 import os
 
 claude_json = os.path.expanduser("~/.claude.json")
+installed_plugins_json = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
 lossless_home = os.environ.get("LOSSLESS_HOME", os.path.expanduser("~/.lossless-code"))
 mcp_server_path = os.path.join(lossless_home, "mcp", "server.py")
+
+# Detect plugin presence. Any failure (missing file, unreadable, bad JSON,
+# missing key, empty entry list) degrades to "plugin not installed" so the
+# manual-install fallback runs. Never raise — a partial plugin registry
+# should not break a manual install.
+plugin_installed = False
+try:
+    with open(installed_plugins_json) as f:
+        registry = json.load(f)
+    entries = registry.get("plugins", {}).get("lossless-code@lossless-code", [])
+    plugin_installed = bool(entries)
+except (OSError, json.JSONDecodeError):
+    plugin_installed = False
 
 # Load existing config or create new
 if os.path.exists(claude_json):
@@ -279,19 +304,31 @@ if os.path.exists(claude_json):
 else:
     config = {}
 
-# Merge MCP server config (don't overwrite other servers)
 mcp_servers = config.get("mcpServers", {})
-mcp_servers["lossless-code"] = {
-    "command": "python3",
-    "args": [mcp_server_path],
-    "env": {}
-}
+
+if plugin_installed:
+    # Plugin is authoritative. Strip any stale user-scope registration so
+    # the plugin endpoint is the only one Claude Code sees.
+    if "lossless-code" in mcp_servers:
+        del mcp_servers["lossless-code"]
+        action = "Removed user-scope MCP registration (plugin provides it)"
+    else:
+        action = "Plugin detected — skipping manual MCP registration (plugin provides it)"
+else:
+    # No plugin. Register the manual-install MCP (preserve other servers).
+    mcp_servers["lossless-code"] = {
+        "command": "python3",
+        "args": [mcp_server_path],
+        "env": {}
+    }
+    action = f"Registered MCP server in {claude_json} (manual install)"
+
 config["mcpServers"] = mcp_servers
 
 with open(claude_json, "w") as f:
     json.dump(config, f, indent=2)
 
-print(f"  [ok] Registered MCP server in {claude_json}")
+print(f"  [ok] {action}")
 MCPEOF
 
 # ── 11. Install skill ────────────────────────────────────────────────────
