@@ -269,66 +269,119 @@ fi
 # endpoint for the same server name (different commands, different OAuth
 # token scopes), which `claude /doctor` surfaces as a warning.
 #
-# Strategy: detect the plugin via ~/.claude/plugins/installed_plugins.json
+# Strategy: detect the plugin via $CLAUDE_DIR/plugins/installed_plugins.json
 # and skip (or strip) the user-scope registration when the plugin is
 # present. Manual-install-only users (no plugin) continue to get the
 # user-scope registration so lossless-code works after one command.
+#
+# This section diverges from section 8's strip-then-always-write hook
+# idempotency pattern: hooks are event-dispatch targets that can safely
+# coexist (with cooldown logic in each hook script), but MCP registration
+# is a name-based endpoint map where two registrations conflict silently
+# at runtime. Avoidance (skip when plugin is present) is the only safe
+# strategy for MCP, hence the explicit branching here.
 
-CLAUDE_JSON="$HOME/.claude.json"
-python3 << 'MCPEOF'
+CLAUDE_DIR="$CLAUDE_DIR" LOSSLESS_HOME="$LOSSLESS_HOME" python3 << 'MCPEOF'
 import json
 import os
+import sys
+import tempfile
 
 claude_json = os.path.expanduser("~/.claude.json")
-installed_plugins_json = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
-lossless_home = os.environ.get("LOSSLESS_HOME", os.path.expanduser("~/.lossless-code"))
+claude_dir = os.environ.get("CLAUDE_DIR") or os.path.expanduser("~/.claude")
+installed_plugins_json = os.path.join(claude_dir, "plugins", "installed_plugins.json")
+lossless_home = os.environ.get("LOSSLESS_HOME") or os.path.expanduser("~/.lossless-code")
 mcp_server_path = os.path.join(lossless_home, "mcp", "server.py")
 
-# Detect plugin presence. Any failure (missing file, unreadable, bad JSON,
-# missing key, empty entry list) degrades to "plugin not installed" so the
-# manual-install fallback runs. Never raise — a partial plugin registry
-# should not break a manual install.
+# Detect plugin presence. Any failure degrades to "plugin not installed"
+# so the manual-install fallback runs. Never raise — a partial plugin
+# registry should not break a manual install. Broad `Exception` catch
+# covers OSError, JSONDecodeError, UnicodeDecodeError, AttributeError on
+# non-dict values, and any other surprises from a malformed registry.
 plugin_installed = False
+plugins_map = {}
 try:
     with open(installed_plugins_json) as f:
         registry = json.load(f)
-    entries = registry.get("plugins", {}).get("lossless-code@lossless-code", [])
+    plugins_map = registry.get("plugins") or {}
+    if not isinstance(plugins_map, dict):
+        plugins_map = {}
+    entries = plugins_map.get("lossless-code@lossless-code") or []
     plugin_installed = bool(entries)
-except (OSError, json.JSONDecodeError):
+except Exception:
     plugin_installed = False
+    plugins_map = {}
 
-# Load existing config or create new
+# Diagnostic: if the plugin registry is readable and non-empty but our
+# expected key is absent while a lossless-code-prefixed key is present,
+# warn. This catches silent false-negatives from a marketplace key-format
+# change (otherwise the script would silently register a duplicate
+# endpoint alongside the plugin's own registration).
+if not plugin_installed and plugins_map:
+    suspicious = [k for k in plugins_map if isinstance(k, str) and k.startswith("lossless-code")]
+    if suspicious:
+        print(f"  [warn] Plugin registry has lossless-code entries but not 'lossless-code@lossless-code': {suspicious}")
+        print(f"  [warn] Falling back to manual install. Check the marketplace metadata if this is unexpected.")
+
+# Load existing ~/.claude.json. Guard against missing, unreadable, or
+# malformed content — the file is user-facing state that may have been
+# truncated by a prior crash or hand-edited. Do not silently default to
+# an empty config on parse failure; that would discard the user's other
+# mcpServers entries.
+config = {}
 if os.path.exists(claude_json):
-    with open(claude_json) as f:
-        config = json.load(f)
-else:
-    config = {}
+    try:
+        with open(claude_json) as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"  [error] {claude_json} is unreadable or contains invalid JSON: {exc}")
+        print(f"  [error] Refusing to overwrite. Inspect the file manually and re-run install.sh.")
+        sys.exit(1)
 
-mcp_servers = config.get("mcpServers", {})
+mcp_servers = config.get("mcpServers") or {}
+if not isinstance(mcp_servers, dict):
+    mcp_servers = {}
+
+dirty = False
 
 if plugin_installed:
     # Plugin is authoritative. Strip any stale user-scope registration so
     # the plugin endpoint is the only one Claude Code sees.
     if "lossless-code" in mcp_servers:
         del mcp_servers["lossless-code"]
-        action = "Removed user-scope MCP registration (plugin provides it)"
+        dirty = True
+        print(f"  [ok] Removed user-scope MCP registration (plugin provides it)")
     else:
-        action = "Plugin detected — skipping manual MCP registration (plugin provides it)"
+        print(f"  [ok] Plugin detected — skipping manual MCP registration (plugin provides it)")
 else:
     # No plugin. Register the manual-install MCP (preserve other servers).
-    mcp_servers["lossless-code"] = {
+    desired = {
         "command": "python3",
         "args": [mcp_server_path],
         "env": {}
     }
-    action = f"Registered MCP server in {claude_json} (manual install)"
+    if mcp_servers.get("lossless-code") != desired:
+        mcp_servers["lossless-code"] = desired
+        dirty = True
+    print(f"  [ok] Registered MCP server in {claude_json} (manual install)")
 
-config["mcpServers"] = mcp_servers
-
-with open(claude_json, "w") as f:
-    json.dump(config, f, indent=2)
-
-print(f"  [ok] {action}")
+# Only write when something actually changed. Avoids reformatting the
+# file and touching its mtime when the script is a no-op (plugin
+# installed + no stale entry, or manual re-run with identical config).
+if dirty:
+    config["mcpServers"] = mcp_servers
+    # Atomic write: write to a temp file in the same directory, then
+    # os.replace() into place. If the process is killed mid-write, the
+    # original file is left intact instead of being truncated to zero.
+    parent_dir = os.path.dirname(claude_json) or "."
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=parent_dir, prefix=".claude.json.",
+        suffix=".tmp", delete=False, encoding="utf-8"
+    ) as tmp:
+        json.dump(config, tmp, indent=2)
+        tmp.write("\n")
+        tmp_path = tmp.name
+    os.replace(tmp_path, claude_json)
 MCPEOF
 
 # ── 11. Install skill ────────────────────────────────────────────────────
@@ -377,7 +430,7 @@ echo ""
 echo "lossless-code installed successfully!"
 echo ""
 echo "Commands available: lcc, lcc_grep, lcc_expand, lcc_context, lcc_sessions, lcc_handoff, lcc_status, lcc_dream, lcc-tui"
-echo "MCP server: registered in ~/.claude.json (auto-discovered by Claude Code)"
+echo "MCP server: see the [ok] line in section 10 above (registration depends on plugin presence)"
 echo "Hooks configured for: SessionStart, UserPromptSubmit, Stop, PreCompact, PostCompact, PreToolUse, PostToolUse"
 echo ""
 echo "Optional — Semantic Search (hybrid FTS5 + vector):"
