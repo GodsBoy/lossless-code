@@ -209,10 +209,12 @@ lossless-code includes an MCP (Model Context Protocol) server so Claude Code can
 
 ### Setup
 
-The installer (`install.sh`) automatically:
+If you installed via the Claude Code plugin (Option A), the MCP server is registered automatically through the plugin's `.mcp.json`. Nothing else to do.
+
+If you installed standalone via `install.sh` (Option B), the installer:
 1. Copies the MCP server to `~/.lossless-code/mcp/server.py`
 2. Installs the `mcp` Python SDK
-3. Registers the server in `~/.claude.json`
+3. Registers the server in `~/.claude.json` as a user-scope MCP — **unless the plugin is also installed**, in which case the script skips (or removes) the user-scope entry so the plugin registration is the single source of truth. This avoids the "Server defined in multiple scopes with different endpoints" warning from `claude /doctor`.
 
 After installation, every new Claude Code session auto-discovers 6 MCP tools:
 
