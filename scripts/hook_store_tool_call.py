@@ -93,6 +93,25 @@ def main():
         args.session, cfg.get("statelessSessionPatterns", [])
     )
     db.ensure_session(args.session, args.dir, stateless=stateless)
+
+    # v1.2 span fields. PostToolUse payloads expose tool_use_id (Claude Code's
+    # internal call id) under that key; defensively check a couple of name
+    # variants in case the payload shape shifts. parent_message_id stays NULL
+    # for v1.2 (would require a DB lookup we explicitly do not do at write
+    # time, per docs/plans/2026-04-25-001-feat-v12-compaction-aware-bundle-plan.md
+    # U3 approach notes).
+    tool_call_id = (
+        data.get("tool_use_id") or data.get("tool_call_id") or data.get("id") or None
+    )
+    if tool_call_id is not None:
+        tool_call_id = str(tool_call_id)
+    attributes = {"tool_name": tool_name}
+    if isinstance(tool_response, dict):
+        # Surface the error flag in attributes so the bundle assembler / lcc_grep
+        # can spot failure spans without parsing content.
+        if tool_response.get("error") or tool_response.get("is_error"):
+            attributes["error"] = True
+
     db.store_message(
         session_id=args.session,
         role="tool",
@@ -100,6 +119,9 @@ def main():
         tool_name=tool_name,
         working_dir=args.dir,
         file_path=file_path,
+        span_kind="tool_call",
+        tool_call_id=tool_call_id,
+        attributes=attributes,
     )
 
 

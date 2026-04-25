@@ -1,5 +1,6 @@
 """Message storage and retrieval for the lossless-code vault."""
 
+import sys
 import time
 from typing import Optional
 
@@ -12,21 +13,52 @@ def store_message(
     tool_name: str = "",
     working_dir: str = "",
     file_path: Optional[str] = None,
+    parent_message_id: Optional[int] = None,
+    span_kind: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    attributes: Optional[dict] = None,
 ) -> int:
     """Insert a message and return its id.
 
     ``file_path`` tags the message with the file that a tool call touched
     (Read/Edit/Write/MultiEdit/NotebookEdit). Repo-relative when the path
     lies under ``working_dir``, absolute otherwise. None for non-file messages.
+
+    v1.2 OTel-shaped span fields (all optional, NULL-able for backfill):
+    - parent_message_id: id of the prior message this one descends from.
+      Currently always NULL; future enhancement when Claude Code's hook
+      payload exposes parent linkage. Never DB-queried at write time
+      (race-prone under concurrent hooks).
+    - span_kind: one of user_prompt, assistant_reply, tool_call, tool_result,
+      system_message, compaction_event. Caller-supplied; this function does
+      not derive it from role.
+    - tool_call_id: Claude Code's tool_use_id when known (links tool_result
+      to its tool_call).
+    - attributes: per-kind metadata dict (tool_name, latency_ms, tokens).
+      Shape-validated here as a defense in depth (caller should also check):
+      non-dict input is logged to stderr and stored as ``{}``. Token-capped
+      via spans.cap_attributes_json.
     """
-    from . import get_db
+    from . import get_db, cap_attributes_json
     db = get_db()
     now = int(time.time())
+    if attributes is not None and not isinstance(attributes, dict):
+        print(
+            f"[lossless-code] store_message: attributes must be a dict, got "
+            f"{type(attributes).__name__}; storing empty object instead",
+            file=sys.stderr,
+        )
+        attributes = {}
+    attrs_json = cap_attributes_json(attributes) if attributes is not None else None
     cur = db.execute(
         """INSERT INTO messages
-           (session_id, turn_id, role, content, tool_name, working_dir, timestamp, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (session_id, turn_id, role, content, tool_name, working_dir, now, file_path),
+           (session_id, turn_id, role, content, tool_name, working_dir, timestamp,
+            file_path, parent_message_id, span_kind, tool_call_id, attributes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session_id, turn_id, role, content, tool_name, working_dir, now,
+            file_path, parent_message_id, span_kind, tool_call_id, attrs_json,
+        ),
     )
     db.commit()
     return cur.lastrowid
