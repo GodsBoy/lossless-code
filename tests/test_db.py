@@ -272,6 +272,63 @@ class TestDatabase(unittest.TestCase):
     def test_count_session_messages_nonexistent(self):
         self.assertEqual(db.count_session_messages("nonexistent-session"), 0)
 
+    # --- v1.2 U1: OTel span columns on messages ---
+
+    def test_span_columns_exist(self):
+        conn = db.get_db()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        for col in ("parent_message_id", "span_kind", "tool_call_id", "attributes"):
+            self.assertIn(col, cols)
+
+    def test_span_columns_nullable_for_pre_migration_rows(self):
+        # store_message without span kwargs must succeed and leave columns NULL
+        db.ensure_session("span-null-session", "/tmp")
+        msg_id = db.store_message("span-null-session", "user", "no-span-info")
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT parent_message_id, span_kind, tool_call_id, attributes "
+            "FROM messages WHERE id = ?", (msg_id,)
+        ).fetchone()
+        self.assertIsNone(row["parent_message_id"])
+        self.assertIsNone(row["span_kind"])
+        self.assertIsNone(row["tool_call_id"])
+        self.assertIsNone(row["attributes"])
+
+    def test_span_indexes_exist(self):
+        conn = db.get_db()
+        idx_names = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        ]
+        for idx in ("idx_messages_span_kind", "idx_messages_parent_id", "idx_messages_tool_call_id"):
+            self.assertIn(idx, idx_names)
+
+    def test_get_db_idempotent_after_v12_migrations(self):
+        """Re-running get_db must be a no-op. Catches any v1.2 migration that
+        forgets the narrow except sqlite3.OperationalError wrapper."""
+        # First call already happened in setUpClass. Reset _conn and call again.
+        db._conn = None
+        conn = db.get_db()
+        # Columns still present, no exception raised
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        self.assertIn("parent_message_id", cols)
+
+    def test_vault_db_permissions_locked_down(self):
+        """vault.db must be 0o600 (owner-only). Closes the world-readable gap
+        before v1.2 contracts.body and messages.attributes inherit it."""
+        import stat
+        st = os.stat(db.VAULT_DB)
+        mode = stat.S_IMODE(st.st_mode)
+        # On some shared filesystems chmod silently no-ops; accept either
+        # 0o600 (preferred) or any mode that excludes group/other read+write.
+        group_other_writable = bool(mode & 0o077)
+        self.assertFalse(
+            group_other_writable,
+            f"vault.db mode {oct(mode)} grants group/other access — security gate violated",
+        )
+
     # --- Session filtering (lossless-claw parity) ---
 
     def test_stateless_column_exists(self):
