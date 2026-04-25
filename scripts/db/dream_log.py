@@ -36,18 +36,24 @@ def store_dream_log(
     sessions_analyzed: int,
     report_path: str = "",
     dreamed_at: Optional[int] = None,
+    mode: Optional[str] = None,
 ) -> int:
-    """Record a dream cycle in the log. Returns the new row id."""
+    """Record a dream cycle in the log. Returns the new row id.
+
+    ``mode`` (v1.2 U6) records whether the contract/decision extractors
+    ran via LLM, fell back to regex, or failed. Read by lcc_status to
+    surface degraded-mode operation to the user. NULL on legacy rows.
+    """
     from . import get_db
     db = get_db()
     now = dreamed_at if dreamed_at is not None else int(time.time())
     cur = db.execute(
         """INSERT INTO dream_log
            (project_hash, scope, dreamed_at, patterns_found, consolidations,
-            sessions_analyzed, report_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            sessions_analyzed, report_path, mode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (project_hash_val, scope, now, patterns_found, consolidations,
-         sessions_analyzed, report_path),
+         sessions_analyzed, report_path, mode),
     )
     db.commit()
     return cur.lastrowid

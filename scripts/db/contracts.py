@@ -72,6 +72,7 @@ def store_contract_candidate(
     scope: str = "project",
     contract_id: Optional[str] = None,
     created_at: Optional[int] = None,
+    conflicts_with: Optional[str] = None,
 ) -> Optional[str]:
     """Insert a new Pending contract.
 
@@ -111,9 +112,12 @@ def store_contract_candidate(
     db.execute(
         """INSERT INTO contracts
            (id, kind, body, byline_session_id, byline_model, created_at,
-            status, supersedes_id, scope, body_hash)
-           VALUES (?, ?, ?, ?, ?, ?, 'Pending', NULL, ?, ?)""",
-        (cid, kind, body, byline_session_id, byline_model, now, scope, body_h),
+            status, supersedes_id, scope, body_hash, conflicts_with)
+           VALUES (?, ?, ?, ?, ?, ?, 'Pending', NULL, ?, ?, ?)""",
+        (
+            cid, kind, body, byline_session_id, byline_model, now,
+            scope, body_h, conflicts_with,
+        ),
     )
     db.commit()
     return cid

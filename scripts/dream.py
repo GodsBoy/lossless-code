@@ -608,6 +608,27 @@ def _run_dream_locked(scope: str, working_dir: str, config: dict, log, start_tim
         del batch_summaries  # free each batch
     log.info(f"Extracted {len(patterns)} patterns")
 
+    # Phase 1.5 (v1.2 U6): typed contract + decision extraction.
+    # Both extractors return (candidates, mode) where mode is one of
+    # llm | extractive | failed. The combined mode is recorded on the
+    # dream_log row so lcc_status can surface degraded operation.
+    import contracts as contracts_mod
+    contract_candidates, contracts_mode = contracts_mod.extract_contract_candidates(messages, [], config)
+    decision_candidates, decisions_mode = contracts_mod.extract_decision_candidates(messages, [], config)
+    contract_stats = contracts_mod.store_extracted_contracts(
+        contract_candidates,
+        byline_session_id=None,
+        byline_model=config.get("contractsModel", config.get("dreamModel")),
+    )
+    decisions_stored = contracts_mod.store_extracted_decisions(decision_candidates)
+    dream_mode = contracts_mod.combine_modes(contracts_mode, decisions_mode)
+    log.info(
+        f"Extracted {contract_stats['stored']} contracts "
+        f"({contract_stats['deduped']} deduped, "
+        f"{contract_stats['conflicts_detected']} conflicts), "
+        f"{decisions_stored} decisions; mode={dream_mode}"
+    )
+
     # Phase 2: DAG consolidation
     log.info("Phase 2: Consolidating DAG")
     consolidation_stats = consolidate_dag(config)
@@ -635,6 +656,7 @@ def _run_dream_locked(scope: str, working_dir: str, config: dict, log, start_tim
         consolidations=total_consolidated,
         sessions_analyzed=sessions_analyzed,
         report_path=report_path,
+        mode=dream_mode,
     )
 
     summary = (

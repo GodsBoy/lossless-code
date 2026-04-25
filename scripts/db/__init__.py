@@ -155,6 +155,20 @@ def get_db() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_contracts_body_hash "
         "ON contracts(body_hash) WHERE body_hash IS NOT NULL"
     )
+    # Migration (v1.2 U6): conflicts_with column on contracts. NULL means
+    # no conflict; non-NULL holds the id of an existing Active contract
+    # whose body inverts this Pending one (heuristic).
+    try:
+        _conn.execute("ALTER TABLE contracts ADD COLUMN conflicts_with TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # Migration (v1.2 U6): mode column on dream_log. Records whether the
+    # contract / decision extractor ran via LLM, regex fallback, or failed.
+    # Read by lcc_status to surface degraded-mode operation to the user.
+    try:
+        _conn.execute("ALTER TABLE dream_log ADD COLUMN mode TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Migration: message_embeddings table for semantic search (IF NOT EXISTS
     # is self-idempotent — no try/except needed, and a bare except would mask
     # unrelated OperationalError from index creation).
