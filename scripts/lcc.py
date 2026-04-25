@@ -206,92 +206,11 @@ def cmd_summarise(args):
 
 
 def cmd_status(args):
-    """Show vault statistics."""
-    d = db.get_db()
-    msg_count = d.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    sum_count = d.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
-    ses_count = d.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    unsummarised = d.execute("SELECT COUNT(*) FROM messages WHERE summarised = 0").fetchone()[0]
-    max_depth = d.execute("SELECT COALESCE(MAX(depth), 0) FROM summaries").fetchone()[0]
-
-    vault_size = os.path.getsize(db.VAULT_DB) if db.VAULT_DB.exists() else 0
-    vault_mb = vault_size / (1024 * 1024)
-
-    # Dream stats
-    dream_count = d.execute("SELECT COUNT(*) FROM dream_log").fetchone()[0]
-    last_dream_row = d.execute("SELECT dreamed_at FROM dream_log ORDER BY dreamed_at DESC LIMIT 1").fetchone()
-    last_dream = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_dream_row[0])) if last_dream_row else "never"
-    consolidated = d.execute("SELECT COUNT(*) FROM summaries WHERE consolidated = 1").fetchone()[0]
-
-    cfg = db.load_config()
-    # Vector search status
-    embed_enabled = cfg.get("embeddingEnabled", False)
-    embed_model = cfg.get("embeddingModel", "BAAI/bge-small-en-v1.5")
-    if embed_enabled:
-        provider = embed_mod.detect_provider(cfg)
-        cov = db.get_embedding_model_coverage(embed_model)
-        if provider and provider != "numpy":
-            vec_status = f"active ({provider}, {embed_model})"
-        else:
-            vec_status = f"inactive (no provider available — pip install lossless-code[embed])"
-        embed_line = (
-            f"  Embeddings:    {cov['embedded']:,} / {cov['total']:,} messages indexed"
-            f"  ({cov['pending']:,} pending)"
-        )
-    else:
-        vec_status = "inactive (embeddingEnabled: false)"
-        embed_line = None
-
-    print(f"lossless-code vault status")
-    print(f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)")
-    print(f"  Sessions:      {ses_count}")
-    print(f"  Messages:      {msg_count} ({unsummarised} unsummarised)")
-    print(f"  Summaries:     {sum_count} (max depth: {max_depth}, {consolidated} consolidated)")
-    print(f"  Dreams:        {dream_count} (last: {last_dream})")
-    print(f"  Vector search: {vec_status}")
-    if embed_line:
-        print(embed_line)
-
-    # Provider info (R5)
-    pinfo = summarise_mod.get_provider_info()
-    p_name = pinfo.get("provider") or "none"
-    p_model = pinfo.get("model") or "none"
-    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
-    p_err = pinfo.get("last_error")
-    if p_err:
-        err_time = pinfo.get("last_error_time")
-        if err_time:
-            ago = int(time.time() - err_time)
-            if ago < 3600:
-                err_ago = f"{ago // 60}m ago"
-            else:
-                err_ago = f"{ago // 3600}h ago"
-        else:
-            err_ago = "unknown"
-        err_str = f"{p_err} {err_ago}"
-    else:
-        err_str = "none"
-    print(f"  Provider:      {p_name} ({p_model}){p_suffix}")
-    print(f"               Last error: {err_str}")
-
-    if cfg.get("fileContextEnabled", False):
-        tagged = d.execute(
-            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        distinct = d.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM messages "
-            "WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        cache_count = 0
-        try:
-            import file_context as fc
-            cache_count = len(fc._load_cache())
-        except Exception:
-            pass
-        print(
-            f"  Fingerprint:   {tagged} tagged messages across "
-            f"{distinct} files ({cache_count} cached)"
-        )
+    """Show vault statistics. Routes through lcc_core.collect_status_dict
+    so the CLI and MCP surfaces report identical fields (U13)."""
+    import lcc_core
+    status = lcc_core.collect_status_dict(working_dir=os.getcwd())
+    print(lcc_core.format_status_human(status))
 
 
 def cmd_reindex(args):

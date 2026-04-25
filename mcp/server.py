@@ -472,58 +472,10 @@ def _do_handoff(session_id: str = "") -> str:
 
 
 def _do_status() -> str:
-    d = db.get_db()
-    msg_count = d.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    sum_count = d.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
-    ses_count = d.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    unsummarised = d.execute(
-        "SELECT COUNT(*) FROM messages WHERE summarised = 0"
-    ).fetchone()[0]
-    max_depth = d.execute(
-        "SELECT COALESCE(MAX(depth), 0) FROM summaries"
-    ).fetchone()[0]
-
-    vault_size = os.path.getsize(str(db.VAULT_DB)) if db.VAULT_DB.exists() else 0
-    vault_mb = vault_size / (1024 * 1024)
-
-    cfg = db.load_config()
-    fp_line = ""
-    if cfg.get("fileContextEnabled", False):
-        tagged = d.execute(
-            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        distinct = d.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM messages "
-            "WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        cache_count = 0
-        try:
-            import file_context as fc
-            cache_count = len(fc._load_cache())
-        except Exception:
-            pass
-        fp_line = (
-            f"\n  Fingerprint:   {tagged} tagged messages across "
-            f"{distinct} files ({cache_count} cached)"
-        )
-
-    # Provider info (MCP parity with CLI status)
-    pinfo = summarise_mod.get_provider_info()
-    p_name = pinfo.get("provider") or "none"
-    p_model = pinfo.get("model") or "none"
-    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
-    p_err = pinfo.get("last_error") or "none"
-
-    return (
-        f"lossless-code vault status\n"
-        f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)\n"
-        f"  Sessions:      {ses_count}\n"
-        f"  Messages:      {msg_count} ({unsummarised} unsummarised)\n"
-        f"  Summaries:     {sum_count} (max depth: {max_depth})\n"
-        f"  Provider:      {p_name} ({p_model}){p_suffix}\n"
-        f"               Last error: {p_err}"
-        f"{fp_line}"
-    )
+    """Routes through lcc_core.collect_status_dict so the MCP surface
+    reports identical fields to the CLI (U13)."""
+    import lcc_core
+    return lcc_core.format_status_human(lcc_core.collect_status_dict())
 
 
 _VALID_CONTRACT_ACTIONS = {"list", "show", "approve", "reject", "retract", "supersede"}
