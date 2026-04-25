@@ -192,6 +192,65 @@ TOOLS = [
         },
     ),
     Tool(
+        name="lcc_contracts",
+        description=(
+            "Behavior-contract registry: typed retractable rules the agent "
+            "follows next session. Actions:\n"
+            "- list: return rows filtered by status (Pending|Active|Retracted|Rejected) and scope.\n"
+            "- show: return a single row by id.\n"
+            "- approve: promote a Pending row to Active.\n"
+            "- reject: mark a Pending row as Rejected.\n"
+            "- retract: flip an Active row to Retracted (requires reason).\n"
+            "- supersede: atomically replace an Active row with a new Active row (requires body).\n"
+            "\n"
+            "Errors return as JSON "
+            '`{\"error\": {\"code\": \"<code>\", \"message\": \"<static>\"}}` '
+            "with codes contract_not_found, invalid_action, missing_argument, "
+            "duplicate_body, invalid_status. Message strings are static and "
+            "never expose filesystem paths or exception internals (TD7)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "show", "approve", "reject", "retract", "supersede"],
+                    "description": "What to do.",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Contract id, required for show/approve/reject/retract/supersede.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["Pending", "Active", "Retracted", "Rejected"],
+                    "description": "Filter for list. Defaults to Pending.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Filter for list. Optional.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Required for retract action.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "New contract body, required for supersede action.",
+                },
+                "byline_session_id": {
+                    "type": "string",
+                    "description": "Optional byline metadata for supersede.",
+                },
+                "byline_model": {
+                    "type": "string",
+                    "description": "Optional byline metadata for supersede.",
+                },
+            },
+            "required": ["action"],
+        },
+    ),
+    Tool(
         name="lcc_status",
         description=(
             "Show vault statistics: session count, message count, "
@@ -278,6 +337,11 @@ _STRUCTURED_ERROR_MESSAGES = {
     "expand_too_large": "span chain exceeds expansion budget; try lcc_grep instead",
     "vault_corrupt": "vault unreachable",
     "permission_denied": "permission denied",
+    "contract_not_found": "contract not found",
+    "invalid_action": "action must be one of list, show, approve, reject, retract, supersede",
+    "missing_argument": "required argument missing for the requested action",
+    "duplicate_body": "contract body is a duplicate of an existing entry",
+    "invalid_status": "status must be one of Pending, Active, Retracted, Rejected",
 }
 
 
@@ -462,6 +526,108 @@ def _do_status() -> str:
     )
 
 
+_VALID_CONTRACT_ACTIONS = {"list", "show", "approve", "reject", "retract", "supersede"}
+_VALID_CONTRACT_STATUSES = {"Pending", "Active", "Retracted", "Rejected"}
+
+
+def _format_contract_row(row: dict) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(row.get("created_at", 0)))
+    parts = [
+        f"id: {row.get('id')}",
+        f"kind: {row.get('kind')}",
+        f"status: {row.get('status')}",
+        f"created: {ts}",
+        f"scope: {row.get('scope')}",
+    ]
+    if row.get("byline_session_id"):
+        parts.append(f"byline_session: {row['byline_session_id']}")
+    if row.get("byline_model"):
+        parts.append(f"byline_model: {row['byline_model']}")
+    if row.get("supersedes_id"):
+        parts.append(f"supersedes: {row['supersedes_id']}")
+    if row.get("conflicts_with"):
+        parts.append(f"conflicts_with: {row['conflicts_with']}")
+    parts.append("body:")
+    parts.append(row.get("body", ""))
+    return "\n".join(parts)
+
+
+def _do_contracts(args: dict) -> str:
+    """Dispatch the lcc_contracts MCP tool. Returns rendered text on
+    success, or a JSON structured error per TD7."""
+    action = args.get("action")
+    if action not in _VALID_CONTRACT_ACTIONS:
+        return _structured_error("invalid_action")
+
+    if action == "list":
+        status = args.get("status", "Pending")
+        if status not in _VALID_CONTRACT_STATUSES:
+            return _structured_error("invalid_status")
+        scope = args.get("scope") or None
+        rows = db.list_contracts(status=status, scope=scope)
+        if not rows:
+            return f"No contracts in status={status}" + (
+                f" scope={scope}" if scope else ""
+            )
+        out = [f"=== Contracts ({status}, {len(rows)} rows) ==="]
+        for r in rows:
+            out.append("")
+            out.append(_format_contract_row(r))
+        return "\n".join(out)
+
+    cid = args.get("id")
+    if not cid:
+        return _structured_error("missing_argument")
+
+    if action == "show":
+        row = db.get_contract(cid)
+        if row is None:
+            return _structured_error("contract_not_found")
+        return _format_contract_row(row)
+
+    if action == "approve":
+        ok = db.approve_contract(cid)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"approved {cid}"
+
+    if action == "reject":
+        ok = db.reject_contract(cid)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"rejected {cid}"
+
+    if action == "retract":
+        reason = args.get("reason")
+        if not reason:
+            return _structured_error("missing_argument")
+        ok = db.retract_contract(cid, reason=reason)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"retracted {cid}"
+
+    if action == "supersede":
+        body = args.get("body")
+        if not body:
+            return _structured_error("missing_argument")
+        new_id = db.supersede_contract(
+            cid,
+            new_body=body,
+            byline_session_id=args.get("byline_session_id"),
+            byline_model=args.get("byline_model"),
+        )
+        if new_id is None:
+            # Either the target was missing or the new body was a duplicate.
+            row = db.get_contract(cid)
+            if row is None:
+                return _structured_error("contract_not_found")
+            return _structured_error("duplicate_body")
+        return f"superseded {cid} -> {new_id}"
+
+    # Should be unreachable given the action check above.
+    return _structured_error("invalid_action")
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
@@ -498,6 +664,8 @@ async def call_tool(name: str, arguments: dict):
             text = _do_sessions(limit=arguments.get("limit", 20))
         elif name == "lcc_handoff":
             text = _do_handoff(session_id=arguments.get("session_id", ""))
+        elif name == "lcc_contracts":
+            text = _do_contracts(arguments)
         elif name == "lcc_status":
             text = _do_status()
         else:

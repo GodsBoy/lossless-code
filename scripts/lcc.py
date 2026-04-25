@@ -317,6 +317,115 @@ def cmd_dream(args):
     print(report)
 
 
+def _print_contract_row(row: dict) -> None:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(row.get("created_at", 0)))
+    print(f"id:     {row['id']}")
+    print(f"kind:   {row['kind']}")
+    print(f"status: {row['status']}")
+    print(f"created: {ts}")
+    print(f"scope:  {row.get('scope')}")
+    if row.get("byline_session_id"):
+        print(f"byline_session: {row['byline_session_id']}")
+    if row.get("byline_model"):
+        print(f"byline_model:   {row['byline_model']}")
+    if row.get("supersedes_id"):
+        print(f"supersedes:     {row['supersedes_id']}")
+    if row.get("conflicts_with"):
+        print(f"conflicts_with: {row['conflicts_with']}")
+    print("body:")
+    print(row.get("body", ""))
+
+
+def cmd_contracts(args):
+    """Behavior-contract registry CLI. Mirrors the lcc_contracts MCP tool.
+
+    Each action exits 0 on success, 1 on user-visible error. Errors print
+    to stderr; success output goes to stdout.
+    """
+    action = args.action
+    if action == "list":
+        status = args.status or "Pending"
+        rows = db.list_contracts(status=status, scope=args.scope)
+        if not rows:
+            scope_str = f" scope={args.scope}" if args.scope else ""
+            print(f"No contracts in status={status}{scope_str}")
+            return
+        for i, r in enumerate(rows):
+            if i:
+                print()
+            _print_contract_row(r)
+        return
+
+    if action == "show":
+        if not args.id:
+            print("contracts show: --id is required", file=sys.stderr)
+            sys.exit(1)
+        row = db.get_contract(args.id)
+        if row is None:
+            print(f"contracts show: {args.id} not found", file=sys.stderr)
+            sys.exit(1)
+        _print_contract_row(row)
+        return
+
+    if action == "approve":
+        if not args.id:
+            print("contracts approve: --id is required", file=sys.stderr)
+            sys.exit(1)
+        if not db.approve_contract(args.id):
+            print(f"contracts approve: {args.id} not found or not Pending", file=sys.stderr)
+            sys.exit(1)
+        print(f"approved {args.id}")
+        return
+
+    if action == "reject":
+        if not args.id:
+            print("contracts reject: --id is required", file=sys.stderr)
+            sys.exit(1)
+        if not db.reject_contract(args.id):
+            print(f"contracts reject: {args.id} not found or not Pending", file=sys.stderr)
+            sys.exit(1)
+        print(f"rejected {args.id}")
+        return
+
+    if action == "retract":
+        if not args.id or not args.reason:
+            print("contracts retract: --id and --reason are required", file=sys.stderr)
+            sys.exit(1)
+        try:
+            ok = db.retract_contract(args.id, reason=args.reason)
+        except ValueError as e:
+            print(f"contracts retract: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not ok:
+            print(f"contracts retract: {args.id} not found or not Active", file=sys.stderr)
+            sys.exit(1)
+        print(f"retracted {args.id}")
+        return
+
+    if action == "supersede":
+        if not args.id or not args.body:
+            print("contracts supersede: --id and --body are required", file=sys.stderr)
+            sys.exit(1)
+        new_id = db.supersede_contract(
+            args.id,
+            new_body=args.body,
+            byline_session_id=args.byline_session_id,
+            byline_model=args.byline_model,
+        )
+        if new_id is None:
+            row = db.get_contract(args.id)
+            if row is None:
+                print(f"contracts supersede: {args.id} not found", file=sys.stderr)
+            else:
+                print("contracts supersede: target not Active or new body is a duplicate", file=sys.stderr)
+            sys.exit(1)
+        print(f"superseded {args.id} -> {new_id}")
+        return
+
+    print(f"contracts: unknown action {action!r}", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="lcc",
@@ -389,6 +498,29 @@ def main():
     p_dream.add_argument("--project", help="Scope to specific working directory")
     p_dream.add_argument("--global", action="store_true", dest="global_scope", help="Run global cross-project dream")
     p_dream.set_defaults(func=cmd_dream)
+
+    # contracts (v1.2 U7)
+    p_contracts = sub.add_parser(
+        "contracts",
+        help="Behavior-contract registry: list / show / approve / reject / retract / supersede",
+    )
+    p_contracts.add_argument(
+        "action",
+        choices=["list", "show", "approve", "reject", "retract", "supersede"],
+        help="What to do",
+    )
+    p_contracts.add_argument("--id", help="Contract id (con_...)")
+    p_contracts.add_argument(
+        "--status",
+        choices=["Pending", "Active", "Retracted", "Rejected"],
+        help="Filter for list (default: Pending)",
+    )
+    p_contracts.add_argument("--scope", help="Filter for list")
+    p_contracts.add_argument("--reason", help="Required for retract")
+    p_contracts.add_argument("--body", help="Required for supersede")
+    p_contracts.add_argument("--byline-session-id", dest="byline_session_id")
+    p_contracts.add_argument("--byline-model", dest="byline_model")
+    p_contracts.set_defaults(func=cmd_contracts)
 
     args = parser.parse_args()
     if not args.command:

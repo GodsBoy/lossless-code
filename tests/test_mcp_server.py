@@ -20,6 +20,7 @@ from server import (
     _do_expand,
     _do_expand_span,
     _do_context,
+    _do_contracts,
     _do_sessions,
     _do_handoff,
     _do_status,
@@ -215,6 +216,115 @@ class TestMCPToolFunctions(unittest.TestCase):
             self.assertNotIn("Traceback", msg)
             self.assertNotIn("sqlite3", msg)
 
+    # --- contracts (v1.2 U7) ---
+
+    def test_contracts_list_empty(self):
+        # Clean slate
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        result = _do_contracts({"action": "list"})
+        self.assertIn("No contracts", result)
+        self.assertNotIn('"error"', result)
+
+    def test_contracts_list_pending(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="contracts list test rule unique")
+        result = _do_contracts({"action": "list", "status": "Pending"})
+        self.assertIn(cid, result)
+        self.assertIn("forbid", result)
+
+    def test_contracts_show_known(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="prefer", body="show test body unique")
+        result = _do_contracts({"action": "show", "id": cid})
+        self.assertIn(cid, result)
+        self.assertIn("prefer", result)
+        self.assertIn("show test body unique", result)
+
+    def test_contracts_show_unknown_returns_structured_error(self):
+        import json as _json
+        result = _do_contracts({"action": "show", "id": "con_nonexistent"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "contract_not_found")
+        # Sanitization: no path leakage
+        self.assertNotIn("/", payload["error"]["message"])
+
+    def test_contracts_approve_pending(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="approve test rule unique")
+        result = _do_contracts({"action": "approve", "id": cid})
+        self.assertIn(cid, result)
+        self.assertIn("approved", result)
+        self.assertEqual(db.get_contract(cid)["status"], "Active")
+
+    def test_contracts_approve_unknown_returns_structured_error(self):
+        import json as _json
+        result = _do_contracts({"action": "approve", "id": "con_unknown"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "contract_not_found")
+
+    def test_contracts_retract_active(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="retract test rule unique")
+        db.approve_contract(cid)
+        result = _do_contracts({
+            "action": "retract", "id": cid, "reason": "scope changed"
+        })
+        self.assertIn("retracted", result)
+        self.assertEqual(db.get_contract(cid)["status"], "Retracted")
+
+    def test_contracts_retract_missing_reason(self):
+        import json as _json
+        result = _do_contracts({"action": "retract", "id": "con_x"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "missing_argument")
+
+    def test_contracts_supersede_active(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        old_id = db.store_contract_candidate(kind="forbid", body="supersede test old unique")
+        db.approve_contract(old_id)
+        result = _do_contracts({
+            "action": "supersede",
+            "id": old_id,
+            "body": "supersede test new unique replacement",
+        })
+        self.assertIn("superseded", result)
+        self.assertIn(old_id, result)
+        self.assertEqual(db.get_contract(old_id)["status"], "Retracted")
+
+    def test_contracts_invalid_action(self):
+        import json as _json
+        result = _do_contracts({"action": "delete"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "invalid_action")
+
+    def test_contracts_missing_id(self):
+        import json as _json
+        result = _do_contracts({"action": "approve"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "missing_argument")
+
+    def test_contracts_invalid_status(self):
+        import json as _json
+        result = _do_contracts({"action": "list", "status": "Bogus"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "invalid_status")
+
+    def test_contracts_in_TOOLS_registry(self):
+        names = [t.name for t in TOOLS]
+        self.assertIn("lcc_contracts", names)
+
     # --- context ---
 
     def test_context_with_query(self):
@@ -285,9 +395,14 @@ class TestMCPProtocol(unittest.TestCase):
 
     def test_list_tools_returns_all(self):
         tools = self._run(list_tools())
-        self.assertEqual(len(tools), 6)
+        # v1.2 U7 added lcc_contracts to the registry.
+        self.assertEqual(len(tools), 7)
         names = {t.name for t in tools}
-        expected = {"lcc_grep", "lcc_expand", "lcc_context", "lcc_sessions", "lcc_handoff", "lcc_status"}
+        expected = {
+            "lcc_grep", "lcc_expand", "lcc_context",
+            "lcc_sessions", "lcc_handoff", "lcc_status",
+            "lcc_contracts",
+        }
         self.assertEqual(names, expected)
 
     def test_tool_schemas_valid(self):
