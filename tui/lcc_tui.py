@@ -28,6 +28,11 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+try:
+    from textual.widgets import TextArea
+    _HAS_TEXTAREA = True
+except ImportError:  # textual < 0.30
+    _HAS_TEXTAREA = False
 
 import db
 
@@ -314,8 +319,227 @@ class SummaryDetailScreen(ModalScreen[None]):
 
 
 # ---------------------------------------------------------------------------
+# Contract detail screen (v1.2 U8)
+# ---------------------------------------------------------------------------
+
+class ContractDetailScreen(ModalScreen[None]):
+    """Shows full body, byline, status, and supersede chain for a contract.
+
+    The DataTable preview truncates body text. The detail modal renders
+    the full body so the user has the unredacted text in front of them
+    before pressing 'a' to approve. This is the safe approval surface.
+    """
+
+    BINDINGS = [Binding("escape", "go_back", "Back")]
+
+    DEFAULT_CSS = """
+    ContractDetailScreen {
+        align: center middle;
+    }
+    #contract-detail-container {
+        width: 90%;
+        height: 90%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #contract-detail-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #contract-detail-scroll {
+        height: 1fr;
+    }
+    .contract-meta {
+        color: $text-muted;
+    }
+    .conflict-warning {
+        color: $warning;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, contract_id: str) -> None:
+        super().__init__()
+        self.contract_id = contract_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="contract-detail-container"):
+            yield Label(f"Contract: {self.contract_id}", id="contract-detail-title")
+            yield VerticalScroll(id="contract-detail-scroll")
+
+    def on_mount(self) -> None:
+        scroll = self.query_one("#contract-detail-scroll", VerticalScroll)
+        contract = db.get_contract(self.contract_id)
+        if not contract:
+            scroll.mount(Label("Contract not found."))
+            return
+
+        scroll.mount(Static(
+            f"[bold]Kind:[/bold] {contract['kind']}    "
+            f"[bold]Status:[/bold] {contract['status']}    "
+            f"[bold]Created:[/bold] {_ts(contract.get('created_at'))}",
+            classes="contract-meta",
+        ))
+        if contract.get("byline_session_id") or contract.get("byline_model"):
+            scroll.mount(Static(
+                f"[bold]Byline:[/bold] session={contract.get('byline_session_id') or '(none)'}, "
+                f"model={contract.get('byline_model') or '(none)'}",
+                classes="contract-meta",
+            ))
+        if contract.get("supersedes_id"):
+            scroll.mount(Static(
+                f"[bold]Supersedes:[/bold] {contract['supersedes_id']}",
+                classes="contract-meta",
+            ))
+        if contract.get("conflicts_with"):
+            scroll.mount(Static(
+                f"⚠ Conflicts with active contract: {contract['conflicts_with']}",
+                classes="conflict-warning",
+            ))
+        scroll.mount(Static(""))
+        scroll.mount(Static("[bold]Body:[/bold]"))
+        scroll.mount(Static(contract.get("body", "")))
+
+    def action_go_back(self) -> None:
+        self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
+# Supersede body screen (v1.2 U8)
+# ---------------------------------------------------------------------------
+
+class SupersedeBodyScreen(ModalScreen[str | None]):
+    """Multi-line entry for a new contract body. Pre-fills the old body so
+    the user edits in place rather than starting blank.
+
+    Returns the new body string when the user presses Ctrl+S, or None
+    when escaped. Caller passes the result to db.supersede_contract.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "submit", "Submit"),
+    ]
+
+    DEFAULT_CSS = """
+    SupersedeBodyScreen {
+        align: center middle;
+    }
+    #supersede-container {
+        width: 90%;
+        height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #supersede-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #supersede-body-input, #supersede-body-textarea {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, contract_id: str, old_body: str) -> None:
+        super().__init__()
+        self.contract_id = contract_id
+        self.old_body = old_body
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="supersede-container"):
+            yield Label(
+                f"Supersede {self.contract_id} (Ctrl+S to submit, Esc to cancel)",
+                id="supersede-title",
+            )
+            if _HAS_TEXTAREA:
+                yield TextArea(self.old_body, id="supersede-body-textarea")
+            else:
+                # Fallback: single-line input. Body cap discipline still
+                # applies but multiline editing is not available.
+                yield Input(value=self.old_body, id="supersede-body-input")
+
+    def action_submit(self) -> None:
+        if _HAS_TEXTAREA:
+            widget = self.query_one("#supersede-body-textarea", TextArea)
+            new_body = widget.text
+        else:
+            widget = self.query_one("#supersede-body-input", Input)
+            new_body = widget.value
+        new_body = (new_body or "").strip()
+        if not new_body:
+            self.dismiss(None)
+            return
+        self.dismiss(new_body)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
+# Retraction reason prompt (v1.2 U8)
+# ---------------------------------------------------------------------------
+
+class RetractionReasonPrompt(ModalScreen[str | None]):
+    """Single-line prompt for a retraction reason. Required: empty input
+    cancels rather than submits an empty reason (db.retract_contract
+    raises on empty reason)."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    RetractionReasonPrompt {
+        align: center middle;
+    }
+    #retract-container {
+        width: 70%;
+        height: 30%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #retract-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    """
+
+    def __init__(self, contract_id: str) -> None:
+        super().__init__()
+        self.contract_id = contract_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="retract-container"):
+            yield Label(
+                f"Retract {self.contract_id} (Enter to submit, Esc to cancel)",
+                id="retract-title",
+            )
+            yield Input(placeholder="Reason (required)", id="retract-reason-input")
+
+    @on(Input.Submitted, "#retract-reason-input")
+    def submit(self, event: Input.Submitted) -> None:
+        reason = (event.value or "").strip()
+        self.dismiss(reason or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
+
+# Filter cycle for the Contracts tab (t key).
+_CONTRACT_FILTERS = ["Pending", "Active", "Retracted"]
+_CONTRACT_EMPTY_MESSAGES = {
+    "Pending": "No pending contracts. Run `lcc dream --run` to populate from session content.",
+    "Active": "No active contracts. Approve some Pending candidates first via the `a` key.",
+    "Retracted": "No retracted contracts. Supersede or retract Active contracts to see them here.",
+}
+
 
 class LccTui(App):
     """lcc-tui — Terminal UI for lossless-code."""
@@ -355,7 +579,16 @@ class LccTui(App):
         Binding("2", "tab_search", "Search", show=False),
         Binding("3", "tab_summaries", "Summaries", show=False),
         Binding("4", "tab_stats", "Stats", show=False),
+        Binding("5", "tab_contracts", "Contracts", show=False),
+        # Contracts-tab actions (no-op when other tabs are active)
+        Binding("a", "approve_contract", "Approve", show=False),
+        Binding("r", "reject_or_retract_contract", "Reject/Retract", show=False),
+        Binding("s", "supersede_contract", "Supersede", show=False),
+        Binding("t", "cycle_contracts_filter", "Cycle filter", show=False),
     ]
+
+    # Reactive: which status filter the Contracts tab is showing.
+    contracts_filter = reactive("Pending")
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -369,12 +602,20 @@ class LccTui(App):
                 yield DataTable(id="summaries-table")
             with TabPane("Stats", id="stats"):
                 yield VerticalScroll(id="stats-container")
+            with TabPane("Contracts", id="contracts"):
+                yield Static(
+                    f"Filter: [bold]Pending[/bold]    "
+                    f"(t to cycle, a approve, r reject/retract, s supersede, Enter for detail)",
+                    id="contracts-header",
+                )
+                yield DataTable(id="contracts-table")
         yield Footer()
 
     def on_mount(self) -> None:
         self._load_sessions()
         self._load_summaries()
         self._load_stats()
+        self._load_contracts()
 
     # ── Data loading ──────────────────────────────────────────────────
 
@@ -444,6 +685,69 @@ class LccTui(App):
             container.mount(Static(f"[bold]{label}[/bold]", classes="stat-label"))
             container.mount(Static(value, classes="stat-value"))
 
+    def _load_contracts(self) -> None:
+        """Populate the contracts DataTable for the current filter."""
+        table = self.query_one("#contracts-table", DataTable)
+        table.cursor_type = "row"
+        table.clear(columns=True)
+        table.add_columns(
+            "ID", "Kind", "Body", "Byline", "Created", "Conflicts"
+        )
+        rows = db.list_contracts(status=self.contracts_filter)
+        if not rows:
+            table.add_row(
+                "-",
+                "-",
+                _CONTRACT_EMPTY_MESSAGES[self.contracts_filter],
+                "",
+                "",
+                "",
+                key=None,
+            )
+            return
+        for r in rows:
+            byline = ""
+            if r.get("byline_session_id"):
+                byline = _trunc(r["byline_session_id"], 16)
+            if r.get("byline_model"):
+                byline = (byline + "@" if byline else "") + _trunc(r["byline_model"], 24)
+            table.add_row(
+                _trunc(r["id"], 18),
+                r["kind"],
+                _trunc(r.get("body", ""), 60),
+                byline or "(none)",
+                _ts(r.get("created_at")),
+                _trunc(r.get("conflicts_with") or "", 18),
+                key=r["id"],
+            )
+
+    def _refresh_contracts_header(self) -> None:
+        header = self.query_one("#contracts-header", Static)
+        header.update(
+            f"Filter: [bold]{self.contracts_filter}[/bold]    "
+            f"(t to cycle, a approve, r reject/retract, s supersede, Enter for detail)"
+        )
+
+    def _selected_contract_id(self) -> str | None:
+        """Return the id under the Contracts table cursor, or None."""
+        try:
+            table = self.query_one("#contracts-table", DataTable)
+        except Exception:
+            return None
+        if table.row_count == 0:
+            return None
+        try:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except Exception:
+            return None
+        return row_key.value if row_key else None
+
+    def _is_contracts_tab_active(self) -> bool:
+        try:
+            return self.query_one(TabbedContent).active == "contracts"
+        except Exception:
+            return False
+
     # ── Actions ───────────────────────────────────────────────────────
 
     def action_search(self) -> None:
@@ -462,6 +766,86 @@ class LccTui(App):
     def action_tab_stats(self) -> None:
         self.query_one(TabbedContent).active = "stats"
 
+    def action_tab_contracts(self) -> None:
+        self.query_one(TabbedContent).active = "contracts"
+
+    def action_cycle_contracts_filter(self) -> None:
+        """Cycle the Contracts tab filter through Pending -> Active -> Retracted."""
+        if not self._is_contracts_tab_active():
+            return
+        idx = _CONTRACT_FILTERS.index(self.contracts_filter)
+        self.contracts_filter = _CONTRACT_FILTERS[(idx + 1) % len(_CONTRACT_FILTERS)]
+        self._refresh_contracts_header()
+        self._load_contracts()
+
+    def action_approve_contract(self) -> None:
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        # Only Pending rows can be approved. Quietly ignore on other filters.
+        contract = db.get_contract(cid)
+        if not contract or contract["status"] != "Pending":
+            self.bell()
+            return
+        if db.approve_contract(cid):
+            self._load_contracts()
+
+    def action_reject_or_retract_contract(self) -> None:
+        """`r` flips Pending -> Rejected, or opens reason prompt for Active."""
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        contract = db.get_contract(cid)
+        if not contract:
+            return
+        if contract["status"] == "Pending":
+            if db.reject_contract(cid):
+                self._load_contracts()
+        elif contract["status"] == "Active":
+            self.push_screen(
+                RetractionReasonPrompt(cid),
+                lambda reason: self._on_retract_reason(cid, reason),
+            )
+        else:
+            self.bell()
+
+    def _on_retract_reason(self, cid: str, reason: str | None) -> None:
+        if not reason:
+            return
+        try:
+            ok = db.retract_contract(cid, reason=reason)
+        except ValueError:
+            return
+        if ok:
+            self._load_contracts()
+
+    def action_supersede_contract(self) -> None:
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        contract = db.get_contract(cid)
+        if not contract or contract["status"] != "Active":
+            self.bell()
+            return
+        old_body = contract.get("body", "")
+        self.push_screen(
+            SupersedeBodyScreen(cid, old_body),
+            lambda new_body: self._on_supersede_body(cid, new_body),
+        )
+
+    def _on_supersede_body(self, cid: str, new_body: str | None) -> None:
+        if not new_body:
+            return
+        new_id = db.supersede_contract(cid, new_body=new_body)
+        if new_id:
+            self._load_contracts()
+
     # ── Row selection ─────────────────────────────────────────────────
 
     @on(DataTable.RowSelected, "#sessions-table")
@@ -473,6 +857,11 @@ class LccTui(App):
     def summary_selected(self, event: DataTable.RowSelected) -> None:
         if event.row_key and event.row_key.value:
             self.push_screen(SummaryDetailScreen(event.row_key.value))
+
+    @on(DataTable.RowSelected, "#contracts-table")
+    def contract_selected(self, event: DataTable.RowSelected) -> None:
+        if event.row_key and event.row_key.value:
+            self.push_screen(ContractDetailScreen(event.row_key.value))
 
     # ── Inline search ─────────────────────────────────────────────────
 
