@@ -46,6 +46,12 @@ DEFAULT_CONFIG = {
     "vectorBackend": "auto",
     # Fingerprint file context (v1.3.0, default off)
     "fileContextEnabled": False,
+    # v1.2 compaction-aware bundle (U10 + U6)
+    "bundleEnabled": True,
+    "bundleTokenBudget": 1000,
+    "contractsModel": None,  # Falls back to dreamModel then summaryModel
+    "contractsPerCycleLimit": 10,
+    "decisionsPerCycleLimit": 15,
 }
 
 
