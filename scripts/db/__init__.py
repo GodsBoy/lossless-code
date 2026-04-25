@@ -203,6 +203,12 @@ from .summaries import (
 )
 from .search import escape_fts5_query, search_messages, search_summaries, search_all
 from .dream_log import project_hash, get_last_dream, store_dream_log
+from .spans import (
+    get_span,
+    get_span_chain,
+    get_children_spans,
+    cap_attributes_json,
+)
 from .embeddings import (
     upsert_embedding,
     get_unembed_messages,
@@ -267,6 +273,11 @@ __all__ = [
     "project_hash",
     "get_last_dream",
     "store_dream_log",
+    # Spans (v1.2 U2): OTel-shaped messages graph
+    "get_span",
+    "get_span_chain",
+    "get_children_spans",
+    "cap_attributes_json",
     # Embeddings
     "upsert_embedding",
     "get_unembed_messages",
