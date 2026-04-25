@@ -27,6 +27,18 @@
 
 > Claude Code forgets. claude-mem remembers fragments. MemPalace compresses until you can't trace back. lossless-code remembers everything.
 
+## What's new in v1.2
+
+The v1.2 release delivers three composing layers on top of the v1.1 vault and dream cycle:
+
+- **Compaction-aware reference bundle.** SessionStart now emits a token-budgeted reference bundle (default 1000 tokens, configurable via `bundleTokenBudget`) instead of a 2-5K token text dump. The agent pulls depth on demand via `lcc_expand`, `lcc_grep`, and `lcc_context`. Recovery-protocol line ships first so the agent knows the protocol before any content arrives.
+- **Behavior contracts.** Typed retractable rules (`prefer` / `forbid` / `verify-before`) the agent commits to follow next session. The dream cycle proposes them as `Pending`; you approve via the TUI Contracts tab (key `5`, then `a` to approve, `r` to reject or retract, `s` to supersede). Append-only retraction trail preserved for audit; supersede atomicity wraps INSERT and UPDATE in `BEGIN IMMEDIATE`.
+- **OpenTelemetry-shaped span substrate.** New `parent_message_id`, `span_kind`, `tool_call_id`, `attributes` columns on the `messages` table. `lcc_expand` accepts `span_id` and walks the parent chain, returning a structured-error JSON shape for `span_not_found` / `expand_too_large` / `vault_corrupt` so agents know how to fall back.
+
+### Reverting to pre-v1.2 behavior
+
+The legacy 2-5K full-text injection from v1.1 has been removed in v1.2. To run Claude Code without lossless-code's SessionStart injection, set `"bundleEnabled": false` in `~/.lossless-code/config.json`. The dream cycle, MCP tools, and TUI continue to work; only the SessionStart bundle is suppressed (graceful degradation).
+
 ## Try it in 60 seconds
 
 ```

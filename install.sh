@@ -43,6 +43,9 @@ cp "$SCRIPT_DIR/scripts/dream.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/embed.py"             "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_embed.py"        "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/check_summariser_pollution.py" "$LOSSLESS_HOME/scripts/"
+# v1.2 additions: contracts extractor + shared status helper
+cp "$SCRIPT_DIR/scripts/contracts.py"         "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/lcc_core.py"          "$LOSSLESS_HOME/scripts/"
 echo "  [ok] Copied Python scripts to $LOSSLESS_HOME/scripts/"
 
 # ── 2b. Copy MCP server ──────────────────────────────────────────────────
@@ -352,7 +355,32 @@ if plugin_installed:
         dirty = True
         print(f"  [ok] Removed user-scope MCP registration (plugin provides it)")
     else:
-        print(f"  [ok] Plugin detected — skipping manual MCP registration (plugin provides it)")
+        print(f"  [ok] Plugin detected. Skipping manual MCP registration (plugin provides it).")
+    # v1.2 multi-install drift warning. install.sh is being invoked despite
+    # the plugin already being present. The vault, hooks, and MCP server
+    # all coexist at the same paths, so both copies of every script are
+    # live. A bug fix that ships in main does not reach the plugin cache
+    # until the next plugin update; conversely, a fix that ships in the
+    # plugin does not reach the manual install until the user re-runs
+    # install.sh. Warn now so the user can decide which install to keep.
+    print("", file=sys.stderr)
+    print(
+        "  [warn] Both manual install (this script) and plugin install detected.",
+        file=sys.stderr,
+    )
+    print(
+        "  [warn] Coexistence works but creates drift on every release.",
+        file=sys.stderr,
+    )
+    print(
+        "  [warn] To run plugin only: rm -rf ~/.lossless-code/ after this install.",
+        file=sys.stderr,
+    )
+    print(
+        "  [warn] To run manual only: claude plugin remove lossless-code",
+        file=sys.stderr,
+    )
+    print("", file=sys.stderr)
 else:
     # No plugin. Register the manual-install MCP (preserve other servers).
     desired = {
