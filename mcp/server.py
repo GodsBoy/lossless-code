@@ -9,7 +9,9 @@ Transport: stdio (stdin/stdout JSON-RPC).
 """
 
 import asyncio
+import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -80,10 +82,22 @@ TOOLS = [
     Tool(
         name="lcc_expand",
         description=(
-            "Expand a summary ID back to its source messages and child "
-            "summaries. Traverses the DAG to show what was compressed. "
-            "Pass `file` instead of `summary_id` to list the most recent "
-            "summaries linked to a file path (requires fileContextEnabled)."
+            "Expand a stored node back to its sources. Three input modes:\n"
+            "1. `summary_id`: expand a summary back to its source messages and "
+            "child summaries (DAG traversal).\n"
+            "2. `file`: list the most recent summaries linked to a file path "
+            "(requires fileContextEnabled).\n"
+            "3. `span_id`: walk the message-to-message parent chain upward from "
+            "the given message id, returning all ancestors. Used when a bundle "
+            "reference points at a span (v1.2+).\n"
+            "\n"
+            "On `span_id` mode only, errors are returned as JSON "
+            '`{\"error\": {\"code\": \"<code>\", \"message\": \"<static>\"}}` '
+            "where `code` is one of: span_not_found, expand_too_large, "
+            "vault_corrupt. Agent fallback when expand_too_large: call "
+            "lcc_grep or lcc_context with topic terms drawn from the failed "
+            "reference. Other modes (summary_id, file) preserve the v1.1.x "
+            "human-readable error format."
         ),
         inputSchema={
             "type": "object",
@@ -94,7 +108,14 @@ TOOLS = [
                 },
                 "file": {
                     "type": "string",
-                    "description": "File path to expand — returns recent summaries that mention it",
+                    "description": "File path to expand. Returns recent summaries that mention it.",
+                },
+                "span_id": {
+                    "type": "string",
+                    "description": (
+                        "Message ID (integer, accepted as string) to walk "
+                        "upward from via parent_message_id. v1.2+."
+                    ),
                 },
                 "full": {
                     "type": "boolean",
@@ -245,6 +266,67 @@ def _do_expand_file(file_path: str, limit: int = 3, full: bool = False) -> str:
         parts.append(
             f"[{ts}] (depth-{s['depth']}, {kind}, {s['id']}) {content}\n"
         )
+    return "\n".join(parts)
+
+
+# v1.2+ structured-error helper. Static messages ONLY, never str(exception).
+# Raw exception strings leak filesystem paths, library internals, and schema
+# fragments into agent context, so the message field is always a pre-defined
+# constant. The code field is the load-bearing semantic signal.
+_STRUCTURED_ERROR_MESSAGES = {
+    "span_not_found": "span not found",
+    "expand_too_large": "span chain exceeds expansion budget; try lcc_grep instead",
+    "vault_corrupt": "vault unreachable",
+    "permission_denied": "permission denied",
+}
+
+
+def _structured_error(code: str) -> str:
+    """Return a JSON-encoded structured error per TD7."""
+    return json.dumps(
+        {
+            "error": {
+                "code": code,
+                "message": _STRUCTURED_ERROR_MESSAGES.get(code, "internal error"),
+            }
+        },
+        separators=(",", ":"),
+    )
+
+
+# Soft cap on span-chain expansion size, enforced before render. 8000 chars
+# is roughly 2000 tokens, well below the typical recoveryFetchCost target
+# but big enough to carry a useful causal chain.
+_SPAN_EXPAND_MAX_CHARS = 8000
+
+
+def _do_expand_span(span_id: str, full: bool = False) -> str:
+    """Walk the parent chain from the given message id. Returns rendered
+    text on success, or a JSON structured error on failure (TD7)."""
+    try:
+        msg_id = int(span_id)
+    except (TypeError, ValueError):
+        return _structured_error("span_not_found")
+    try:
+        chain = db.get_span_chain(msg_id)
+    except sqlite3.DatabaseError:
+        return _structured_error("vault_corrupt")
+    if not chain:
+        return _structured_error("span_not_found")
+
+    parts = [f"=== Span chain for message {msg_id} ({len(chain)} hops) ==="]
+    running = len(parts[0])
+    for span in chain:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        kind = span.get("span_kind") or "?"
+        content = span["content"]
+        if len(content) > 500 and not full:
+            content = content[:500] + "..."
+        line = f"[hop {span['hop']}] {ts} ({kind}, id={span['id']}) {content}\n"
+        running += len(line)
+        if running > _SPAN_EXPAND_MAX_CHARS and not full:
+            return _structured_error("expand_too_large")
+        parts.append(line)
     return "\n".join(parts)
 
 
@@ -400,8 +482,13 @@ async def call_tool(name: str, arguments: dict):
                     summary_id=arguments["summary_id"],
                     full=arguments.get("full", False),
                 )
+            elif arguments.get("span_id"):
+                text = _do_expand_span(
+                    span_id=arguments["span_id"],
+                    full=arguments.get("full", False),
+                )
             else:
-                text = "lcc_expand requires either `summary_id` or `file`."
+                text = "lcc_expand requires `summary_id`, `file`, or `span_id`."
         elif name == "lcc_context":
             text = _do_context(
                 query=arguments.get("query", ""),

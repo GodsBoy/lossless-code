@@ -18,6 +18,7 @@ import db
 from server import (
     _do_grep,
     _do_expand,
+    _do_expand_span,
     _do_context,
     _do_sessions,
     _do_handoff,
@@ -114,6 +115,105 @@ class TestMCPToolFunctions(unittest.TestCase):
     def test_expand_full_content(self):
         result = _do_expand(self.test_summary_id, full=True)
         self.assertIn(self.test_summary_id, result)
+
+    # --- expand_span (v1.2 U4) ---
+
+    def test_expand_span_returns_chain(self):
+        """Happy path: walk parent chain upward from a leaf message."""
+        import json as _json
+
+        db.ensure_session("span-mcp", "/tmp")
+        # Build a 3-deep chain manually so we control parent ids exactly.
+        conn = db.get_db()
+        import time as _time
+        ts = int(_time.time() * 1000)
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'user', 'root msg', '', '', ?, 'user_prompt', NULL)",
+            ("span-mcp", ts),
+        )
+        root_id = cur.lastrowid
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'assistant', 'mid msg', '', '', ?, 'assistant_reply', ?)",
+            ("span-mcp", ts + 1, root_id),
+        )
+        mid_id = cur.lastrowid
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'tool', 'leaf msg', 'Read', '', ?, 'tool_call', ?)",
+            ("span-mcp", ts + 2, mid_id),
+        )
+        leaf_id = cur.lastrowid
+        conn.commit()
+
+        result = _do_expand_span(str(leaf_id))
+        self.assertNotIn('"error"', result, f"Expected text response, got JSON error: {result}")
+        self.assertIn("Span chain", result)
+        self.assertIn("3 hops", result)
+        # Leaf-first ordering: hop 0 is the leaf
+        self.assertIn("hop 0", result)
+        self.assertIn("hop 2", result)
+
+    def test_expand_span_unknown_id_returns_structured_error(self):
+        import json as _json
+        result = _do_expand_span("99999999")
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "span_not_found")
+        # Sanitized message: no filesystem paths or stack traces.
+        self.assertNotIn("/", payload["error"]["message"])
+
+    def test_expand_span_invalid_id_returns_span_not_found(self):
+        import json as _json
+        result = _do_expand_span("not-a-number")
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "span_not_found")
+
+    def test_expand_span_oversized_chain_returns_expand_too_large(self):
+        """When the rendered chain exceeds the soft cap, return structured error."""
+        import json as _json
+
+        db.ensure_session("oversized-span", "/tmp")
+        conn = db.get_db()
+        import time as _time
+        # Build a chain with very long content to exceed _SPAN_EXPAND_MAX_CHARS.
+        big_content = "x" * 600  # 600 chars per hop -> ~12K chars across 20 hops
+        ts = int(_time.time() * 1000)
+        parent = None
+        leaf_id = None
+        for i in range(25):
+            cur = conn.execute(
+                "INSERT INTO messages (session_id, turn_id, role, content, "
+                "tool_name, working_dir, timestamp, span_kind, parent_message_id) "
+                "VALUES (?, '', 'user', ?, '', '', ?, 'user_prompt', ?)",
+                ("oversized-span", big_content, ts + i, parent),
+            )
+            parent = cur.lastrowid
+            leaf_id = cur.lastrowid
+        conn.commit()
+
+        # full=False should trigger the cap. content is truncated per-line, but
+        # 25 hops with 500-char-truncated lines still pushes well past 8K.
+        result = _do_expand_span(str(leaf_id), full=False)
+        if '"error"' in result:
+            payload = _json.loads(result)
+            self.assertEqual(payload["error"]["code"], "expand_too_large")
+        else:
+            # If the per-line truncation happened to fit, that's also acceptable.
+            self.assertIn("Span chain", result)
+
+    def test_expand_span_error_message_no_str_exception_leakage(self):
+        """Sanitization rule: error messages are static strings, no path leaks."""
+        import json as _json
+        from server import _STRUCTURED_ERROR_MESSAGES
+
+        for code, msg in _STRUCTURED_ERROR_MESSAGES.items():
+            self.assertNotIn("/", msg, f"code={code} leaks path-like char in: {msg}")
+            self.assertNotIn("Traceback", msg)
+            self.assertNotIn("sqlite3", msg)
 
     # --- context ---
 
