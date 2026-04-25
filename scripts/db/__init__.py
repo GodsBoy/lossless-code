@@ -126,6 +126,35 @@ def get_db() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_messages_tool_call_id "
         "ON messages(tool_call_id) WHERE tool_call_id IS NOT NULL"
     )
+    # Contracts table (v1.2 U5): typed retractable rules that ride inside
+    # the SessionStart bundle. Append-only with supersedes_id chain.
+    # IF NOT EXISTS is self-idempotent; no try/except needed.
+    _conn.execute(
+        """CREATE TABLE IF NOT EXISTS contracts (
+            id                 TEXT PRIMARY KEY,
+            kind               TEXT NOT NULL,
+            body               TEXT NOT NULL,
+            byline_session_id  TEXT,
+            byline_model       TEXT,
+            created_at         INTEGER NOT NULL,
+            status             TEXT NOT NULL DEFAULT 'Pending',
+            supersedes_id      TEXT,
+            scope              TEXT DEFAULT 'project',
+            body_hash          TEXT
+        )"""
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_status "
+        "ON contracts(status)"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_supersedes "
+        "ON contracts(supersedes_id) WHERE supersedes_id IS NOT NULL"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_body_hash "
+        "ON contracts(body_hash) WHERE body_hash IS NOT NULL"
+    )
     # Migration: message_embeddings table for semantic search (IF NOT EXISTS
     # is self-idempotent — no try/except needed, and a bare except would mask
     # unrelated OperationalError from index creation).
@@ -209,6 +238,16 @@ from .spans import (
     get_children_spans,
     cap_attributes_json,
 )
+from .contracts import (
+    gen_contract_id,
+    store_contract_candidate,
+    get_contract,
+    list_contracts,
+    approve_contract,
+    reject_contract,
+    retract_contract,
+    supersede_contract,
+)
 from .embeddings import (
     upsert_embedding,
     get_unembed_messages,
@@ -278,6 +317,15 @@ __all__ = [
     "get_span_chain",
     "get_children_spans",
     "cap_attributes_json",
+    # Contracts (v1.2 U5): typed retractable rules
+    "gen_contract_id",
+    "store_contract_candidate",
+    "get_contract",
+    "list_contracts",
+    "approve_contract",
+    "reject_contract",
+    "retract_contract",
+    "supersede_contract",
     # Embeddings
     "upsert_embedding",
     "get_unembed_messages",
