@@ -314,10 +314,34 @@ class TestCombineModes(unittest.TestCase):
     def test_same_mode_returns_same(self):
         self.assertEqual(ce.combine_modes("llm", "llm"), "llm")
         self.assertEqual(ce.combine_modes("failed", "failed"), "failed")
+        self.assertEqual(ce.combine_modes("noop", "noop"), "noop")
 
     def test_different_modes_return_mixed(self):
         self.assertEqual(ce.combine_modes("llm", "extractive"), "mixed")
         self.assertEqual(ce.combine_modes("llm", "failed"), "mixed")
+
+    def test_noop_is_transparent_when_other_extractor_ran(self):
+        """One extractor no-op + the other ran should report what ran,
+        not 'mixed'. 'mixed' is reserved for genuinely divergent
+        extraction outcomes that the operator should investigate."""
+        self.assertEqual(ce.combine_modes("noop", "llm"), "llm")
+        self.assertEqual(ce.combine_modes("llm", "noop"), "llm")
+        self.assertEqual(ce.combine_modes("noop", "extractive"), "extractive")
+        self.assertEqual(ce.combine_modes("failed", "noop"), "failed")
+
+
+class TestExtractorEmptyInputReturnsNoop(unittest.TestCase):
+    def test_contracts_empty_messages_returns_noop(self):
+        """Empty input window means nothing was attempted - mode='noop',
+        not 'llm'. Prior shape misrepresented the cycle as having run."""
+        out, mode = ce.extract_contract_candidates([], [], {})
+        self.assertEqual(out, [])
+        self.assertEqual(mode, "noop")
+
+    def test_decisions_empty_messages_returns_noop(self):
+        out, mode = ce.extract_decision_candidates([], [], {})
+        self.assertEqual(out, [])
+        self.assertEqual(mode, "noop")
 
 
 if __name__ == "__main__":

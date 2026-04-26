@@ -275,15 +275,22 @@ def extract_contract_candidates(
     summaries: list[dict],
     config: dict,
 ) -> tuple[list[dict], str]:
-    """Return (candidates, mode) where mode is llm, extractive, or failed.
+    """Return (candidates, mode) where mode is llm, extractive, noop, or failed.
 
-    The LLM path runs first; on empty response or exception, falls back
-    to regex. mode='failed' means both paths returned empty (or the LLM
-    raised and the regex matched nothing).
+    Modes:
+    - 'noop'        empty input window; nothing was attempted
+    - 'llm'         LLM extractor succeeded
+    - 'extractive'  LLM path failed/empty; regex fallback found candidates
+    - 'failed'      LLM and regex both returned no candidates
+
+    On empty input the prior shape returned mode='llm', which silently
+    misrepresented the dream cycle as having run an LLM extraction.
+    'noop' surfaces the no-op honestly so lcc_status's lastDreamMode
+    field reflects what actually happened.
     """
     chunk_text = _format_for_extraction(messages, summaries)
     if not chunk_text:
-        return [], "llm"
+        return [], "noop"
     max_n = int(config.get("contractsPerCycleLimit", DEFAULT_CONTRACTS_PER_CYCLE))
 
     # LLM path. Imported lazily so test fixtures can monkey-patch
@@ -321,9 +328,10 @@ def extract_decision_candidates(
     summaries: list[dict],
     config: dict,
 ) -> tuple[list[dict], str]:
+    """Same shape and modes as extract_contract_candidates."""
     chunk_text = _format_for_extraction(messages, summaries)
     if not chunk_text:
-        return [], "llm"
+        return [], "noop"
     max_n = int(config.get("decisionsPerCycleLimit", DEFAULT_DECISIONS_PER_CYCLE))
 
     response = ""
@@ -417,8 +425,17 @@ def store_extracted_decisions(candidates: list[dict]) -> int:
 def combine_modes(contracts_mode: str, decisions_mode: str) -> str:
     """Combine the per-extractor mode signals into a single dream_log
     mode value. Used by the dream cycle to record degraded-mode operation
-    that lcc_status surfaces in U13."""
+    that lcc_status surfaces in U13.
+
+    'noop' is treated as transparent: if one extractor was a no-op and
+    the other actually ran, the combined mode reflects what ran. Two
+    noops collapse to 'noop'. Otherwise mismatched modes report 'mixed'.
+    """
     if contracts_mode == decisions_mode:
+        return contracts_mode
+    if contracts_mode == "noop":
+        return decisions_mode
+    if decisions_mode == "noop":
         return contracts_mode
     return "mixed"
 
