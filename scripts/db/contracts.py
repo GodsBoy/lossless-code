@@ -266,18 +266,22 @@ def supersede_contract(
         raise ValueError("supersede body must be non-empty")
     from . import get_db
     db = get_db()
-    target = db.execute(
-        "SELECT id, kind, scope FROM contracts WHERE id = ? AND status = 'Active'",
-        (old_id,),
-    ).fetchone()
-    if target is None:
-        return None
     new_body = _cap_body(new_body)
     body_h = _body_hash(new_body)
     new_id = gen_contract_id()
     now = int(time.time())
     try:
         db.execute("BEGIN IMMEDIATE")
+        # Read the target inside BEGIN IMMEDIATE so a concurrent retract
+        # that lands between SELECT and UPDATE cannot leave us flipping
+        # an already-Retracted row (TOCTOU).
+        target = db.execute(
+            "SELECT id, kind, scope FROM contracts WHERE id = ? AND status = 'Active'",
+            (old_id,),
+        ).fetchone()
+        if target is None:
+            db.rollback()
+            return None
         # Dedup against existing rows. Without this, the supersede flow
         # could re-introduce a previously-rejected rule under the cover
         # of a "new" id.
@@ -298,10 +302,17 @@ def supersede_contract(
                 old_id, target["scope"], body_h,
             ),
         )
-        db.execute(
-            "UPDATE contracts SET status = 'Retracted' WHERE id = ?",
+        # Belt-and-braces: even with the in-transaction SELECT above, gate
+        # the UPDATE on status='Active' so any future refactor that moves
+        # the SELECT out cannot regress to silent Retracted->Retracted flips.
+        cursor = db.execute(
+            "UPDATE contracts SET status = 'Retracted' "
+            "WHERE id = ? AND status = 'Active'",
             (old_id,),
         )
+        if cursor.rowcount != 1:
+            db.rollback()
+            return None
         db.commit()
     except Exception:
         db.rollback()
