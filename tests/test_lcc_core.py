@@ -191,5 +191,84 @@ class TestFormatStatusHuman(unittest.TestCase):
         self.assertIn("mode=extractive", rendered)
 
 
+class TestLccExpandCliParity(unittest.TestCase):
+    """v1.2 P1: lcc expand --span-id mirrors the MCP span_id mode."""
+
+    @classmethod
+    def setUpClass(cls):
+        db._conn = None
+        db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DIR = db.Path(TEST_DIR)
+        db.VAULT_DB = db.VAULT_DIR / "vault.db"
+        db.CONFIG_PATH = db.VAULT_DIR / "config.json"
+        db.get_db()
+        # Re-import lcc with the test paths in place. Import once at class
+        # setup so the parser is built against the test environment.
+        import importlib
+        import lcc as _lcc
+        importlib.reload(_lcc)
+        cls.lcc = _lcc
+
+    def test_parser_accepts_span_id(self):
+        """The argument lands on the namespace under the same name as MCP."""
+        parser = None
+        # Walk the lcc.main parser surface via build_parser if it exists,
+        # otherwise rely on parsing through main(). We exercise the parse
+        # path directly by constructing the same parser.
+        import argparse
+        import lcc as _lcc
+        # Use a tiny argv to confirm parsing succeeds.
+        old_argv = sys.argv
+        try:
+            sys.argv = ["lcc", "expand", "--span-id", "42"]
+            # Build a parser by introspecting main(). Easier: invoke main()
+            # with a recorded args.func that asserts the namespace shape.
+            captured = {}
+            original = _lcc.cmd_expand_span
+            def _capture(args):
+                captured["span_id"] = args.span_id
+                captured["full"] = getattr(args, "full", False)
+            _lcc.cmd_expand_span = _capture
+            try:
+                _lcc.main()
+            finally:
+                _lcc.cmd_expand_span = original
+        finally:
+            sys.argv = old_argv
+        self.assertEqual(captured.get("span_id"), "42")
+
+    def test_cli_walks_real_chain(self):
+        """End-to-end: seed messages, walk the chain via cmd_expand_span."""
+        import io
+        import contextlib
+        import time as _time
+        import lcc as _lcc
+
+        db.ensure_session("cli-span", "/tmp/cli-span")
+        conn = db.get_db()
+        ts = int(_time.time() * 1000)
+        parent = None
+        leaf_id = None
+        for i in range(3):
+            cur = conn.execute(
+                "INSERT INTO messages (session_id, turn_id, role, content, "
+                "tool_name, working_dir, timestamp, span_kind, parent_message_id) "
+                "VALUES (?, '', 'user', ?, '', '', ?, 'user_prompt', ?)",
+                ("cli-span", f"hop {i} content", ts + i, parent),
+            )
+            parent = cur.lastrowid
+            leaf_id = cur.lastrowid
+        conn.commit()
+
+        buf = io.StringIO()
+        ns = type("NS", (), {"span_id": str(leaf_id), "full": False})()
+        with contextlib.redirect_stdout(buf):
+            _lcc.cmd_expand_span(ns)
+        out = buf.getvalue()
+        self.assertIn("Span chain", out)
+        self.assertIn("hop 0", out)
+        self.assertIn("hop 2", out)
+
+
 if __name__ == "__main__":
     unittest.main()

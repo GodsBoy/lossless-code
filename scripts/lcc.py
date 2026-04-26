@@ -63,6 +63,9 @@ def cmd_grep(args):
 
 def cmd_expand(args):
     """Expand a summary node to its source messages/summaries."""
+    if getattr(args, "span_id", None):
+        cmd_expand_span(args)
+        return
     if getattr(args, "file", None):
         cfg = db.load_config()
         if not cfg.get("fileContextEnabled", False):
@@ -117,6 +120,30 @@ def cmd_expand(args):
                 if len(content) > 500 and not args.full:
                     content = content[:500] + "..."
                 print(f"{content}\n")
+
+
+def cmd_expand_span(args):
+    """Walk the parent chain from a message id (CLI parity with the MCP
+    span_id mode). Mirrors the per-line truncation rules but skips the
+    chain-total cap because CLI consumers are humans, not agent context.
+    """
+    try:
+        msg_id = int(args.span_id)
+    except (TypeError, ValueError):
+        print(f"Invalid span id: {args.span_id}")
+        return
+    chain = db.get_span_chain(msg_id)
+    if not chain:
+        print(f"No span chain rooted at message {msg_id}.")
+        return
+    print(f"=== Span chain for message {msg_id} ({len(chain)} hops) ===")
+    for span in chain:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        kind = span.get("span_kind") or "?"
+        content = span["content"]
+        if len(content) > 500 and not args.full:
+            content = content[:500] + "..."
+        print(f"[hop {span['hop']}] {ts} ({kind}, id={span['id']}) {content}\n")
 
 
 def cmd_context(args):
@@ -367,12 +394,18 @@ def main():
         "summary_id",
         nargs="?",
         default=None,
-        help="Summary ID (e.g. sum_abc123) — omit when using --file",
+        help="Summary ID (e.g. sum_abc123); omit when using --file or --span-id",
     )
     p_expand.add_argument(
         "--file",
         default=None,
-        help="File path to expand — lists recent summaries that mention it",
+        help="File path to expand; lists recent summaries that mention it",
+    )
+    p_expand.add_argument(
+        "--span-id",
+        dest="span_id",
+        default=None,
+        help="Message ID; walks the parent_message_id chain (v1.2 span mode)",
     )
     p_expand.add_argument(
         "--limit", type=int, default=3, help="Max summaries when using --file"
