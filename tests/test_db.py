@@ -391,7 +391,7 @@ class TestDatabase(unittest.TestCase):
         group_other_writable = bool(mode & 0o077)
         self.assertFalse(
             group_other_writable,
-            f"vault.db mode {oct(mode)} grants group/other access — security gate violated",
+            f"vault.db mode {oct(mode)} grants group/other access. Security gate violated.",
         )
 
     # --- Session filtering (lossless-claw parity) ---
