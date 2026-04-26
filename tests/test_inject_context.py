@@ -134,6 +134,11 @@ class TestAE1HappyPath(TestInjectContextBase):
         # Each item type has at least one Expand instruction
         self.assertIn("'lcc_contracts'", result)
         self.assertIn("'lcc_expand'", result)
+        # Handoff Expand routes to lcc_handoff(session_id), not lcc_expand.
+        # lcc_expand has no `session` argument, so a handoff-on-lcc_expand
+        # call would fail at runtime.
+        self.assertIn("'lcc_handoff'", result)
+        self.assertNotIn('"session":', result)
 
 
 class TestAE5RecoveryLineAlwaysPresent(TestInjectContextBase):

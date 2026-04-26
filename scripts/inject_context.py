@@ -291,7 +291,7 @@ def _render_handoff_ref(session: dict) -> str:
     summary_line = _sanitize_for_context(handoff.split("\n", 1)[0], max_len=200)
     return (
         f"[lcc.handoff] {summary_line}. "
-        f'Expand: call MCP tool \'lcc_expand\' with {{"session": "{sid}"}}'
+        f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
     )
 
 
