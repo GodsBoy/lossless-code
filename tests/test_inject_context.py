@@ -354,6 +354,33 @@ class TestSlotPacker(TestInjectContextBase):
         self.assertEqual(rendered, [])
         self.assertEqual(used, 0)
 
+    def test_pack_slot_skips_oversize_continues_to_next(self):
+        """TD4: an item that overflows the remaining budget is skipped,
+        and the packer continues with the next item. A single oversized
+        item must not starve smaller items that would have fit."""
+        # First item is large enough to overflow the small remaining
+        # budget after the second item lands. With 'break' semantics,
+        # the third item would be silently dropped. With 'continue',
+        # the third item still lands.
+        items = [
+            {"id": "small1", "kind": "forbid",
+             "body": "tiny rule one", "created_at": 0},
+            # Padded body to push this item past a tight slot budget.
+            {"id": "huge", "kind": "forbid",
+             "body": "x " * 200, "created_at": 0},
+            {"id": "small2", "kind": "forbid",
+             "body": "tiny rule two", "created_at": 0},
+        ]
+        rendered, _ = inject_context._pack_slot(
+            items, slot_budget=80, renderer=inject_context._render_contract_ref
+        )
+        bodies = " ".join(rendered)
+        self.assertIn("tiny rule one", bodies)
+        # 'huge' must be excluded (oversize), but 'tiny rule two' must
+        # still land - that is the regression guard against 'break'.
+        self.assertIn("tiny rule two", bodies)
+        self.assertNotIn("x x x x x", bodies)
+
 
 class TestRecoveryLineContent(TestInjectContextBase):
     """The recovery line is the load-bearing agent-instruction surface."""

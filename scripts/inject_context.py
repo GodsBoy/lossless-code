@@ -357,11 +357,13 @@ def _render_decision_ref(summary: dict) -> str:
 def _pack_slot(items: list[dict], slot_budget: int, renderer) -> tuple[list[str], int]:
     """Greedy-pack rendered items into a single slot.
 
-    Returns (rendered_lines, tokens_used). Items that exceed the slot
-    budget after rendering are skipped rather than emitted truncated;
-    each renderer is responsible for keeping its output below the
-    per-item ceiling. Empty rendered output (sanitization rejection,
-    missing fields) is treated as a skip.
+    Returns (rendered_lines, tokens_used). Items that exceed the
+    remaining slot budget after rendering are skipped (continue), not
+    stop-the-slot (break) - per TD4, the bundle assembler must try every
+    candidate so a single oversized item cannot starve smaller items
+    that would have fit. Each renderer is responsible for keeping its
+    output below the per-item ceiling. Empty rendered output
+    (sanitization rejection, missing fields) is also a skip.
     """
     out: list[str] = []
     used = 0
@@ -371,7 +373,7 @@ def _pack_slot(items: list[dict], slot_budget: int, renderer) -> tuple[list[str]
             continue
         line_tokens = estimate_tokens(line) + 1  # +1 for the joining newline
         if used + line_tokens > slot_budget:
-            break
+            continue
         out.append(line)
         used += line_tokens
     return out, used
