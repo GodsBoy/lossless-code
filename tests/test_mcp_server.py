@@ -2,6 +2,7 @@
 """Tests for lossless-code MCP server."""
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -451,6 +452,21 @@ class TestMCPProtocol(unittest.TestCase):
         result = self._run(call_tool("nonexistent_tool", {}))
         self.assertEqual(len(result), 1)
         self.assertIn("Unknown tool", result[0].text)
+
+    def test_call_tool_sanitizes_unhandled_exceptions(self):
+        """Exceptions inside a handler must surface as a structured error,
+        never as raw exception text. Raw text leaks filesystem paths and
+        SQLite library internals into agent context.
+        """
+        # lcc_grep with no query argument used to surface a KeyError as
+        # "Error in lcc_grep: 'query'" — bypassing the structured-error
+        # contract for every other failure path.
+        result = self._run(call_tool("lcc_grep", {}))
+        self.assertEqual(len(result), 1)
+        payload = json.loads(result[0].text)
+        self.assertEqual(payload["error"]["code"], "internal_error")
+        self.assertNotIn("KeyError", result[0].text)
+        self.assertNotIn("'query'", result[0].text)
 
     def test_call_tool_returns_text_content(self):
         """All tool calls return TextContent objects."""

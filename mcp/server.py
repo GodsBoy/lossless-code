@@ -342,6 +342,7 @@ _STRUCTURED_ERROR_MESSAGES = {
     "missing_argument": "required argument missing for the requested action",
     "duplicate_body": "contract body is a duplicate of an existing entry",
     "invalid_status": "status must be one of Pending, Active, Retracted, Rejected",
+    "internal_error": "internal error in tool handler",
 }
 
 
@@ -623,7 +624,17 @@ async def call_tool(name: str, arguments: dict):
         else:
             text = f"Unknown tool: {name}"
     except Exception as e:
-        text = f"Error in {name}: {e}"
+        # Never leak raw exception strings into agent context. They carry
+        # filesystem paths, SQLite library internals, and stack-frame data
+        # that becomes load-bearing on the agent's next turn. Per TD7, every
+        # tool error returns a structured-error JSON with a static message.
+        # Operators get the real cause via stderr.
+        print(
+            f"[lcc-mcp] {name} raised {type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        text = _structured_error("internal_error")
 
     return [TextContent(type="text", text=text)]
 
