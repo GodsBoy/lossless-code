@@ -334,11 +334,13 @@ class TestMCPToolFunctions(unittest.TestCase):
 
     # --- context ---
 
-    def test_context_with_query(self):
-        result = _do_context(query="auth")
-        self.assertIsInstance(result, str)
-
-    def test_context_no_query(self):
+    def test_context_takes_no_arguments(self):
+        """v1.2: lcc_context returns the SessionStart reference bundle.
+        It accepts no arguments; query/limit were removed from the schema
+        because build_context never honored them."""
+        import inspect
+        sig = inspect.signature(_do_context)
+        self.assertEqual(list(sig.parameters), [])
         result = _do_context()
         self.assertIsInstance(result, str)
 

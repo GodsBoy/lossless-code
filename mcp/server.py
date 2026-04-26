@@ -139,24 +139,14 @@ TOOLS = [
     Tool(
         name="lcc_context",
         description=(
-            "Get relevant context for a query. Combines search with "
-            "handoff text and top summaries from the DAG. Use this to "
-            "recall what happened in previous sessions."
+            "Return the v1.2 reference bundle for the current session: "
+            "active contracts, the latest handoff line, recent decisions, "
+            "and file fingerprints, each with an Expand instruction. Pair "
+            "with lcc_grep when you need topic-search over recent turns."
         ),
         inputSchema={
             "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Query to find relevant context (optional)",
-                    "default": "",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max summary nodes to include (default 5)",
-                    "default": 5,
-                },
-            },
+            "properties": {},
             "required": [],
         },
     ),
@@ -444,8 +434,8 @@ def _do_expand(summary_id: str, full: bool = False) -> str:
     return "\n".join(parts)
 
 
-def _do_context(query: str = "", limit: int = 5) -> str:
-    context = inject_context.build_context(query=query, limit=limit)
+def _do_context() -> str:
+    context = inject_context.build_context()
     return context if context else "No context available yet."
 
 
@@ -619,10 +609,7 @@ async def call_tool(name: str, arguments: dict):
             else:
                 text = "lcc_expand requires `summary_id`, `file`, or `span_id`."
         elif name == "lcc_context":
-            text = _do_context(
-                query=arguments.get("query", ""),
-                limit=arguments.get("limit", 5),
-            )
+            text = _do_context()
         elif name == "lcc_sessions":
             text = _do_sessions(limit=arguments.get("limit", 20))
         elif name == "lcc_handoff":

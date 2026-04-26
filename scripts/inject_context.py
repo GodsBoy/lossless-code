@@ -449,8 +449,6 @@ def _pack_fingerprint_slot(
 def build_context(
     session_id: str = None,
     working_dir: str = "",
-    query: str = "",
-    limit: int = 5,
     config_override: dict = None,
 ) -> str:
     """Assemble the v1.2 reference bundle for SessionStart injection.

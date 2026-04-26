@@ -120,11 +120,8 @@ def cmd_expand(args):
 
 
 def cmd_context(args):
-    """Surface top N relevant DAG nodes for a query."""
-    context = inject_context.build_context(
-        query=args.query,
-        limit=args.limit,
-    )
+    """Print the v1.2 reference bundle that SessionStart would inject."""
+    context = inject_context.build_context()
     if context:
         print(context)
     else:
@@ -384,9 +381,7 @@ def main():
     p_expand.set_defaults(func=cmd_expand)
 
     # context
-    p_ctx = sub.add_parser("context", help="Surface relevant context")
-    p_ctx.add_argument("query", nargs="?", default="", help="Query")
-    p_ctx.add_argument("--limit", type=int, default=5)
+    p_ctx = sub.add_parser("context", help="Print the v1.2 SessionStart bundle")
     p_ctx.set_defaults(func=cmd_context)
 
     # sessions
