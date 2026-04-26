@@ -193,7 +193,13 @@ _CONTRACT_REGEX_PATTERNS = [
 
 def _extractive_contracts_fallback(messages: list[dict]) -> list[dict]:
     """Regex-based fallback when LLM is unavailable. Scans user messages
-    for command-shaped phrasing. Low precision, but better than empty."""
+    for command-shaped phrasing. Low precision, but better than empty.
+
+    Body casing is preserved to match the LLM extractor (which returns
+    sentence-cased rules). Lowercasing was used for both display and
+    dedup before; this drifted from the LLM path so contract bodies
+    looked different depending on which extractor produced them.
+    """
     out: list[dict] = []
     seen: set[str] = set()
     for m in messages:
@@ -202,9 +208,10 @@ def _extractive_contracts_fallback(messages: list[dict]) -> list[dict]:
         content = m.get("content") or ""
         for pattern, kind in _CONTRACT_REGEX_PATTERNS:
             for match in re.finditer(pattern, content, re.IGNORECASE):
-                body = match.group(1).rstrip(".!?,;:").strip().lower()
-                if 5 < len(body) < 120 and body not in seen:
-                    seen.add(body)
+                body = match.group(1).rstrip(".!?,;:").strip()
+                key = body.lower()
+                if 5 < len(body) < 120 and key not in seen:
+                    seen.add(key)
                     out.append({"kind": kind, "body": body})
     return out
 

@@ -95,6 +95,29 @@ class TestExtractiveFallback(unittest.TestCase):
         out = ce._extractive_contracts_fallback(msgs)
         self.assertEqual(out, [])
 
+    def test_contracts_fallback_preserves_body_casing(self):
+        """Bodies must keep their original casing to match the LLM
+        extractor output; lowercasing belongs in dedup keys only."""
+        msgs = [
+            {"role": "user", "content": "Never use AWS Lambda for cron jobs"},
+        ]
+        out = ce._extractive_contracts_fallback(msgs)
+        self.assertEqual(len(out), 1)
+        # Display body keeps acronyms and proper nouns intact.
+        self.assertIn("AWS Lambda", out[0]["body"])
+        self.assertNotIn("aws lambda", out[0]["body"])
+
+    def test_contracts_fallback_dedups_case_insensitively(self):
+        """Two messages that differ only in casing should produce one
+        candidate (the first one wins, casing preserved)."""
+        msgs = [
+            {"role": "user", "content": "Never use AWS Lambda for cron jobs"},
+            {"role": "user", "content": "never use aws lambda for cron jobs"},
+        ]
+        out = ce._extractive_contracts_fallback(msgs)
+        self.assertEqual(len(out), 1)
+        self.assertIn("AWS Lambda", out[0]["body"])
+
     def test_decisions_fallback_finds_we_decided(self):
         msgs = [
             {"role": "user", "content": "We decided to ship the bundle in v1.2.0", "session_id": "s1"},
