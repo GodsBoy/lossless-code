@@ -17,54 +17,6 @@ import db
 from summarise import estimate_tokens
 
 
-def _load_dream_patterns(working_dir: str = "", config: dict = None) -> str:
-    """Load dream patterns for injection into session context.
-
-    Reads per-project patterns (if working_dir matches) and global patterns.
-    Combines within the configured token budget.
-    """
-    if config is None:
-        config = db.load_config()
-
-    token_budget = config.get("dreamTokenBudget", 2000)
-    dream_dir = db.VAULT_DIR / "dream"
-    parts = []
-
-    # Per-project patterns
-    if working_dir:
-        phash = db.project_hash(working_dir)
-        project_path = dream_dir / "projects" / phash / "patterns.md"
-        if project_path.exists():
-            try:
-                content = project_path.read_text().strip()
-                if content:
-                    parts.append(content)
-            except OSError:
-                pass
-
-    # Global patterns
-    global_path = dream_dir / "global" / "patterns.md"
-    if global_path.exists():
-        try:
-            content = global_path.read_text().strip()
-            if content:
-                parts.append(content)
-        except OSError:
-            pass
-
-    if not parts:
-        return ""
-
-    combined = "\n\n".join(parts)
-
-    # Truncate to token budget (rough estimate: 4 chars per token)
-    max_chars = token_budget * 4
-    if len(combined) > max_chars:
-        combined = combined[:max_chars] + "\n... [truncated to token budget]"
-
-    return combined
-
-
 _CONTROL_CHARS = "".join(chr(c) for c in range(0x20) if c not in (0x09,))
 
 
@@ -185,23 +137,6 @@ def get_handoff(session_id: str = None) -> str:
         if s.get("handoff_text"):
             return s["handoff_text"]
     return ""
-
-
-def get_relevant_summaries(query: str = "", limit: int = 5) -> list[dict]:
-    """Get relevant summaries — by FTS search if query given, otherwise top by depth.
-
-    Fetches limit * 3 candidates from the DB to give the budget-aware packer
-    a larger pool to select from. The caller decides how many to actually include.
-    """
-    candidates = limit * 3
-
-    if query and query.strip():
-        results = db.search_summaries(query, limit=candidates)
-        if results:
-            return results
-
-    # Fallback: return highest-depth summaries (most compressed overview)
-    return db.get_top_summaries(limit=candidates)
 
 
 # ---------------------------------------------------------------------------
