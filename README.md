@@ -80,10 +80,11 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
         │  (write)   │    │  (shell)    │  │   Tools     │ │  Server  │
         │            │    │             │  │             │ │  (stdio) │
         │ SessionStart│   │ lcc_grep    │  │ lcc_status  │ │          │
-        │ Stop       │    │ lcc_expand  │  │             │ │ 6 tools  │
-        │ PreCompact │    │ lcc_context │  │             │ │ read-only│
-        │ PostCompact│    │ lcc_sessions│  │             │ │          │
+        │ Stop       │    │ lcc_expand  │  │             │ │ 7 tools  │
+        │ PreCompact │    │ lcc_context │  │             │ │ read +   │
+        │ PostCompact│    │ lcc_sessions│  │             │ │ contracts│
         │ UserPrompt │    │ lcc_handoff │  │             │ │          │
+        │            │    │ lcc_contracts│ │             │ │          │
         └─────┬──────┘    └──────┬──────┘  └──────┬──────┘ └────┬─────┘
               │                  │                │              │
               └──────────────────┼────────────────┼──────────────┘
@@ -110,7 +111,7 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
 | **Summarisation** | Cascading DAG (depth-N) | AAAK compression (lossy) | Single-level | None | Single-level |
 | **Search** | Hybrid (FTS5 + vector) | Semantic + palace navigation | Hybrid (BM25 + vector + reranker) | Keyword | Hybrid (BM25 + vector) |
 | **Multi-provider** | Any (auto-detect + openaiBaseUrl) | Any (all major LLMs) | Bun + llama.cpp | None | Bun |
-| **MCP tools** | 6 | 19 | 28 | 0 | 10+ |
+| **MCP tools** | 7 | 19 | 28 | 0 | 10+ |
 | **Background services** | None | None | watcher + embed timer + GPU | None | Worker on port 37777 |
 | **Runtime** | Python (stdlib) | Python | Bun + llama.cpp (optional) | None | Bun |
 | **Models required** | None (extractive fallback) | None (AAAK is non-LLM) | 2GB+ GGUF (embed + reranker) | None | Chroma embeddings |
@@ -132,7 +133,7 @@ Every MCP tool registered in `~/.claude.json` has its schema injected into **eve
 
 - ClawMem: **28 MCP tools** (query, intent_search, find_causal_links, timeline, similar, etc.)
 - claude-mem: **10+ search endpoints** via worker service
-- lossless-code: **6 MCP tools** (grep, expand, context, sessions, handoff, status)
+- lossless-code: **7 MCP tools** (grep, expand, context, sessions, handoff, status, contracts)
 
 Over a 200-turn session, that difference in tool schema overhead compounds significantly.
 
@@ -228,16 +229,17 @@ If you installed standalone via `install.sh` (Option B), the installer:
 2. Installs the `mcp` Python SDK
 3. Registers the server in `~/.claude.json` as a user-scope MCP — **unless the plugin is also installed**, in which case the script skips (or removes) the user-scope entry so the plugin registration is the single source of truth. This avoids the "Server defined in multiple scopes with different endpoints" warning from `claude /doctor`.
 
-After installation, every new Claude Code session auto-discovers 6 MCP tools:
+After installation, every new Claude Code session auto-discovers 7 MCP tools:
 
 | Tool | Description |
 |------|-------------|
 | `lcc_grep` | Full-text search across messages and summaries |
-| `lcc_expand` | Expand a summary back to source messages (DAG traversal) |
-| `lcc_context` | Get relevant context for a query |
+| `lcc_expand` | Expand a summary, file, or span chain back to source messages (v1.2: span_id mode for OTel-shaped span walks) |
+| `lcc_context` | Return the v1.2 SessionStart reference bundle (contracts + handoff + decisions + fingerprints) |
 | `lcc_sessions` | List sessions with metadata |
 | `lcc_handoff` | Generate session handoff documents |
-| `lcc_status` | Vault statistics (sessions, messages, DAG depth, DB size) |
+| `lcc_status` | Vault statistics (sessions, messages, DAG depth, DB size) plus v1.2 contract/decision counts and bundle state |
+| `lcc_contracts` | List, show, approve, reject, retract, or supersede behavior contracts (v1.2) |
 
 ### Manual Registration
 
@@ -258,12 +260,12 @@ If you need to register the MCP server manually:
 ### Architecture
 
 ```
-  Claude Code  ──stdio──▶  MCP Server  ──read-only──▶  vault.db
+  Claude Code  ──stdio──▶  MCP Server  ─▶  vault.db
                             (server.py)
-                            6 tools
+                            7 tools
 ```
 
-The MCP server is **read-only**. All writes to the vault happen through hooks (SessionStart, Stop, UserPromptSubmit, PreCompact, PostCompact). The MCP server imports the `db` package (`scripts/db/`) directly for SQLite access.
+The MCP server is **read-mostly**. Six of seven tools are read-only (grep, expand, context, sessions, handoff, status). The seventh, `lcc_contracts`, mutates the `contracts` table for approve/reject/retract/supersede actions; the `list` and `show` actions remain read-only. All other writes (messages, summaries, sessions) still happen through hooks (SessionStart, Stop, UserPromptSubmit, PreCompact, PostCompact). The MCP server imports the `db` package (`scripts/db/`) directly for SQLite access.
 
 ## Commands
 
@@ -541,7 +543,12 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
   "circuitBreakerEnabled": true,
   "circuitBreakerThreshold": 5,
   "circuitBreakerCooldownMs": 1800000,
-  "dynamicChunkSize": { "enabled": true, "max": 50 }
+  "dynamicChunkSize": { "enabled": true, "max": 50 },
+  "bundleEnabled": true,
+  "bundleTokenBudget": 1000,
+  "contractsModel": null,
+  "contractsPerCycleLimit": 5,
+  "decisionsPerCycleLimit": 10
 }
 ```
 
@@ -567,6 +574,16 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
 | `dreamBatchSize` | `100` | Summaries loaded per batch during dream cycle (prevents OOM) |
 | `contextTokenBudget` | `8000` | Max tokens for context injection (summaries + handoff + dreams). When a query is present, summaries are ranked by FTS5 BM25 relevance and packed greedily within this budget. Without a query, summaries are selected by DAG depth. Individual summaries are never truncated mid-content. |
 | `fileContextEnabled` | `false` | Master switch for the [fingerprint file context](#fingerprint-file-context) feature. When off, the PreToolUse/PostToolUse hooks return immediately and no file paths are recorded. |
+
+**v1.2 reference bundle and behavior contracts:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `bundleEnabled` | `true` | v1.2 sole rollback flag. When `false`, SessionStart emits no additionalContext (the dream cycle, MCP tools, contracts queue, and TUI all keep working). Use this to A/B compare against a no-injection baseline or to disable injection on a CI runner. |
+| `bundleTokenBudget` | `1000` | Total token budget for the SessionStart reference bundle. Header + recovery line cost is subtracted first; the remainder is divided across contracts (200), handoff (100), decisions (250), and fingerprints (250) per slot. Lower values drop oldest items first; the recovery line and header are last to lose space. |
+| `contractsModel` | `null` | Model used by the dream cycle's Phase 1.5 contract extractor. When `null`, falls back to `dreamModel`. Set this to a smaller model if dream cycles are over budget on contracts/decisions extraction. |
+| `contractsPerCycleLimit` | `5` | Maximum new Pending contracts the dream cycle proposes per run. Hard cap to keep the TUI approval queue tractable; further candidates are deferred to the next cycle. |
+| `decisionsPerCycleLimit` | `10` | Maximum new decision-typed summaries the dream cycle records per run. Decisions ride in the SessionStart bundle's decisions slot once recorded. |
 
 **Session filtering:**
 
