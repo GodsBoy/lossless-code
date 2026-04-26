@@ -280,20 +280,21 @@ lcc_grep "auth refactor"
 
 ### `lcc_expand <summary_id>`
 
-Expand a summary node back to its source messages.
+Expand a summary node back to its source messages. v1.2 also accepts a span id (walks the `parent_message_id` chain) and a file path (lists summaries that mention it).
 
 ```bash
-lcc_expand sum_abc123def456
-lcc_expand sum_abc123def456 --full
+lcc_expand sum_abc123def456                # by summary id
+lcc_expand sum_abc123def456 --full         # no per-line truncation; total cap still applies
+lcc_expand --span-id 4271                  # v1.2: walk the parent chain from a message id
+lcc_expand --file path/to/file.py          # list recent summaries that touched this file
 ```
 
-### `lcc_context [query]`
+### `lcc_context`
 
-Surface relevant DAG nodes for a query. Without a query, returns highest-depth summaries.
+Print the v1.2 SessionStart reference bundle (contracts + handoff line + decisions + file fingerprints) with each line carrying its own Expand instruction. Takes no arguments; the bundle shape is the same content the SessionStart hook injects.
 
 ```bash
-lcc_context "auth system"
-lcc_context --limit 10
+lcc_context
 ```
 
 ### `lcc_sessions`
@@ -316,11 +317,27 @@ lcc_handoff --generate --session "$CLAUDE_SESSION_ID"
 
 ### `lcc_status`
 
-Show vault statistics: message count, summary count, DAG depth, dream stats, and FTS index health.
+Show vault statistics: message count, summary count, DAG depth, dream stats, and FTS index health. v1.2 adds contract counts by status, decision count, bundle state and budget, and the last dream cycle's mode (LLM, regex fallback, or failure).
 
 ```bash
 lcc_status
 ```
+
+### `lcc_contracts` (v1.2)
+
+List, show, approve, reject, retract, or supersede behavior contracts. Same six actions on both the CLI and the MCP tool.
+
+```bash
+lcc contracts list                                       # default: list Pending
+lcc contracts list --status Active
+lcc contracts show --id con_abc123
+lcc contracts approve --id con_abc123
+lcc contracts reject --id con_abc123
+lcc contracts retract --id con_abc123 --reason "no longer applies"
+lcc contracts supersede --id con_abc123 --body "new replacement rule"
+```
+
+The TUI Contracts tab (key `5`) is the recommended approval surface for Pending candidates, since it shows the full body before you press `a` to approve.
 
 ### `lcc_dream`
 
@@ -350,14 +367,23 @@ lcc-tui
 | Search | `2` | Full-text search across messages and summaries |
 | Summaries | `3` | Browse DAG summaries by depth; select to expand |
 | Stats | `4` | Dashboard: sessions, messages, summaries, vault size |
+| Contracts | `5` | v1.2: approve / reject / retract / supersede behavior contracts |
 
 ### Navigation
 
-- `1` to `4`: switch tabs
+- `1` to `5`: switch tabs
 - `/`: open search modal from any view
 - `Enter`: drill into selected session or summary
 - `Esc`: go back
 - `q`: quit
+
+### Contracts tab keys (v1.2)
+
+- `a`: approve the selected Pending contract (flips to Active, rides in every SessionStart bundle)
+- `r`: reject (Pending) or retract (Active) the selected contract; retraction prompts for a required reason
+- `s`: supersede the selected Active contract via a TextArea pre-filled with the old body
+- `t`: cycle the filter between Pending / Active / Retracted
+- `Enter`: open the contract detail modal with the full body before approving
 
 ![lcc-tui sessions view](docs/images/lcc-tui-sessions.jpg)
 
