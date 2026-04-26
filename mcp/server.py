@@ -119,7 +119,12 @@ TOOLS = [
                 },
                 "full": {
                     "type": "boolean",
-                    "description": "Show full content without truncation (default false)",
+                    "description": (
+                        "Show full per-item content without per-line truncation "
+                        "(default false). The total response size is always "
+                        "capped; a chain that exceeds the budget returns an "
+                        "expand_too_large structured error regardless of full."
+                    ),
                     "default": False,
                 },
                 "limit": {
@@ -389,7 +394,12 @@ def _do_expand_span(span_id: str, full: bool = False) -> str:
             content = content[:500] + "..."
         line = f"[hop {span['hop']}] {ts} ({kind}, id={span['id']}) {content}\n"
         running += len(line)
-        if running > _SPAN_EXPAND_MAX_CHARS and not full:
+        # The chain-total cap is a hard ceiling on agent-context cost.
+        # full=true relaxes per-span truncation only, never the total.
+        # Without this, full=true is an unbounded read primitive: a long
+        # chain (legitimately or maliciously long) could push tens of
+        # thousands of characters into a single tool result.
+        if running > _SPAN_EXPAND_MAX_CHARS:
             return _structured_error("expand_too_large")
         parts.append(line)
     return "\n".join(parts)

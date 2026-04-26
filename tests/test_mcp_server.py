@@ -207,6 +207,12 @@ class TestMCPToolFunctions(unittest.TestCase):
             # If the per-line truncation happened to fit, that's also acceptable.
             self.assertIn("Span chain", result)
 
+        # full=True must NOT bypass the chain cap. Without per-line
+        # truncation 25 hops * 600 chars = 15K, comfortably past 8K.
+        result_full = _do_expand_span(str(leaf_id), full=True)
+        payload = _json.loads(result_full)
+        self.assertEqual(payload["error"]["code"], "expand_too_large")
+
     def test_expand_span_error_message_no_str_exception_leakage(self):
         """Sanitization rule: error messages are static strings, no path leaks."""
         import json as _json
