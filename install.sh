@@ -422,8 +422,9 @@ echo "  [ok] Installed skill to $SKILL_DIR"
 # ── 12. Install TUI ─────────────────────────────────────────────────────
 
 mkdir -p "$LOSSLESS_HOME/tui"
-cp "$SCRIPT_DIR/tui/lcc_tui.py" "$LOSSLESS_HOME/tui/"
-cp "$SCRIPT_DIR/tui/lcc-tui"   "$LOSSLESS_HOME/tui/"
+cp "$SCRIPT_DIR/tui/lcc_tui.py"        "$LOSSLESS_HOME/tui/"
+cp "$SCRIPT_DIR/tui/contracts_view.py" "$LOSSLESS_HOME/tui/"
+cp "$SCRIPT_DIR/tui/lcc-tui"           "$LOSSLESS_HOME/tui/"
 chmod +x "$LOSSLESS_HOME/tui/lcc-tui"
 ln -sf "$LOSSLESS_HOME/tui/lcc-tui" /usr/local/bin/lcc-tui 2>/dev/null || \
 ln -sf "$LOSSLESS_HOME/tui/lcc-tui" "$HOME/.local/bin/lcc-tui" 2>/dev/null || true
