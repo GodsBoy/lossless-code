@@ -9,7 +9,9 @@ Transport: stdio (stdin/stdout JSON-RPC).
 """
 
 import asyncio
+import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -80,10 +82,22 @@ TOOLS = [
     Tool(
         name="lcc_expand",
         description=(
-            "Expand a summary ID back to its source messages and child "
-            "summaries. Traverses the DAG to show what was compressed. "
-            "Pass `file` instead of `summary_id` to list the most recent "
-            "summaries linked to a file path (requires fileContextEnabled)."
+            "Expand a stored node back to its sources. Three input modes:\n"
+            "1. `summary_id`: expand a summary back to its source messages and "
+            "child summaries (DAG traversal).\n"
+            "2. `file`: list the most recent summaries linked to a file path "
+            "(requires fileContextEnabled).\n"
+            "3. `span_id`: walk the message-to-message parent chain upward from "
+            "the given message id, returning all ancestors. Used when a bundle "
+            "reference points at a span (v1.2+).\n"
+            "\n"
+            "On `span_id` mode only, errors are returned as JSON "
+            '`{\"error\": {\"code\": \"<code>\", \"message\": \"<static>\"}}` '
+            "where `code` is one of: span_not_found, expand_too_large, "
+            "vault_corrupt. Agent fallback when expand_too_large: call "
+            "lcc_grep or lcc_context with topic terms drawn from the failed "
+            "reference. Other modes (summary_id, file) preserve the v1.1.x "
+            "human-readable error format."
         ),
         inputSchema={
             "type": "object",
@@ -94,11 +108,23 @@ TOOLS = [
                 },
                 "file": {
                     "type": "string",
-                    "description": "File path to expand — returns recent summaries that mention it",
+                    "description": "File path to expand. Returns recent summaries that mention it.",
+                },
+                "span_id": {
+                    "type": "string",
+                    "description": (
+                        "Message ID (integer, accepted as string) to walk "
+                        "upward from via parent_message_id. v1.2+."
+                    ),
                 },
                 "full": {
                     "type": "boolean",
-                    "description": "Show full content without truncation (default false)",
+                    "description": (
+                        "Show full per-item content without per-line truncation "
+                        "(default false). The total response size is always "
+                        "capped; a chain that exceeds the budget returns an "
+                        "expand_too_large structured error regardless of full."
+                    ),
                     "default": False,
                 },
                 "limit": {
@@ -113,24 +139,14 @@ TOOLS = [
     Tool(
         name="lcc_context",
         description=(
-            "Get relevant context for a query. Combines search with "
-            "handoff text and top summaries from the DAG. Use this to "
-            "recall what happened in previous sessions."
+            "Return the v1.2 reference bundle for the current session: "
+            "active contracts, the latest handoff line, recent decisions, "
+            "and file fingerprints, each with an Expand instruction. Pair "
+            "with lcc_grep when you need topic-search over recent turns."
         ),
         inputSchema={
             "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Query to find relevant context (optional)",
-                    "default": "",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max summary nodes to include (default 5)",
-                    "default": 5,
-                },
-            },
+            "properties": {},
             "required": [],
         },
     ),
@@ -168,6 +184,65 @@ TOOLS = [
                 },
             },
             "required": [],
+        },
+    ),
+    Tool(
+        name="lcc_contracts",
+        description=(
+            "Behavior-contract registry: typed retractable rules the agent "
+            "follows next session. Actions:\n"
+            "- list: return rows filtered by status (Pending|Active|Retracted|Rejected) and scope.\n"
+            "- show: return a single row by id.\n"
+            "- approve: promote a Pending row to Active.\n"
+            "- reject: mark a Pending row as Rejected.\n"
+            "- retract: flip an Active row to Retracted (requires reason).\n"
+            "- supersede: atomically replace an Active row with a new Active row (requires body).\n"
+            "\n"
+            "Errors return as JSON "
+            '`{\"error\": {\"code\": \"<code>\", \"message\": \"<static>\"}}` '
+            "with codes contract_not_found, invalid_action, missing_argument, "
+            "duplicate_body, invalid_status. Message strings are static and "
+            "never expose filesystem paths or exception internals (TD7)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "show", "approve", "reject", "retract", "supersede"],
+                    "description": "What to do.",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Contract id, required for show/approve/reject/retract/supersede.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["Pending", "Active", "Retracted", "Rejected"],
+                    "description": "Filter for list. Defaults to Pending.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Filter for list. Optional.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Required for retract action.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "New contract body, required for supersede action.",
+                },
+                "byline_session_id": {
+                    "type": "string",
+                    "description": "Optional byline metadata for supersede.",
+                },
+                "byline_model": {
+                    "type": "string",
+                    "description": "Optional byline metadata for supersede.",
+                },
+            },
+            "required": ["action"],
         },
     ),
     Tool(
@@ -248,6 +323,78 @@ def _do_expand_file(file_path: str, limit: int = 3, full: bool = False) -> str:
     return "\n".join(parts)
 
 
+# v1.2+ structured-error helper. Static messages ONLY, never str(exception).
+# Raw exception strings leak filesystem paths, library internals, and schema
+# fragments into agent context, so the message field is always a pre-defined
+# constant. The code field is the load-bearing semantic signal.
+_STRUCTURED_ERROR_MESSAGES = {
+    "span_not_found": "span not found",
+    "expand_too_large": "span chain exceeds expansion budget; try lcc_grep instead",
+    "vault_corrupt": "vault unreachable",
+    "permission_denied": "permission denied",
+    "contract_not_found": "contract not found",
+    "invalid_action": "action must be one of list, show, approve, reject, retract, supersede",
+    "missing_argument": "required argument missing for the requested action",
+    "duplicate_body": "contract body is a duplicate of an existing entry",
+    "invalid_status": "status must be one of Pending, Active, Retracted, Rejected",
+    "internal_error": "internal error in tool handler",
+}
+
+
+def _structured_error(code: str) -> str:
+    """Return a JSON-encoded structured error per TD7."""
+    return json.dumps(
+        {
+            "error": {
+                "code": code,
+                "message": _STRUCTURED_ERROR_MESSAGES.get(code, "internal error"),
+            }
+        },
+        separators=(",", ":"),
+    )
+
+
+# Soft cap on span-chain expansion size, enforced before render. 8000 chars
+# is roughly 2000 tokens, well below the typical recoveryFetchCost target
+# but big enough to carry a useful causal chain.
+_SPAN_EXPAND_MAX_CHARS = 8000
+
+
+def _do_expand_span(span_id: str, full: bool = False) -> str:
+    """Walk the parent chain from the given message id. Returns rendered
+    text on success, or a JSON structured error on failure (TD7)."""
+    try:
+        msg_id = int(span_id)
+    except (TypeError, ValueError):
+        return _structured_error("span_not_found")
+    try:
+        chain = db.get_span_chain(msg_id)
+    except sqlite3.DatabaseError:
+        return _structured_error("vault_corrupt")
+    if not chain:
+        return _structured_error("span_not_found")
+
+    parts = [f"=== Span chain for message {msg_id} ({len(chain)} hops) ==="]
+    running = len(parts[0])
+    for span in chain:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        kind = span.get("span_kind") or "?"
+        content = span["content"]
+        if len(content) > 500 and not full:
+            content = content[:500] + "..."
+        line = f"[hop {span['hop']}] {ts} ({kind}, id={span['id']}) {content}\n"
+        running += len(line)
+        # The chain-total cap is a hard ceiling on agent-context cost.
+        # full=true relaxes per-span truncation only, never the total.
+        # Without this, full=true is an unbounded read primitive: a long
+        # chain (legitimately or maliciously long) could push tens of
+        # thousands of characters into a single tool result.
+        if running > _SPAN_EXPAND_MAX_CHARS:
+            return _structured_error("expand_too_large")
+        parts.append(line)
+    return "\n".join(parts)
+
+
 def _do_expand(summary_id: str, full: bool = False) -> str:
     summary = db.get_summary(summary_id)
     if not summary:
@@ -287,8 +434,8 @@ def _do_expand(summary_id: str, full: bool = False) -> str:
     return "\n".join(parts)
 
 
-def _do_context(query: str = "", limit: int = 5) -> str:
-    context = inject_context.build_context(query=query, limit=limit)
+def _do_context() -> str:
+    context = inject_context.build_context()
     return context if context else "No context available yet."
 
 
@@ -326,58 +473,112 @@ def _do_handoff(session_id: str = "") -> str:
 
 
 def _do_status() -> str:
-    d = db.get_db()
-    msg_count = d.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    sum_count = d.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
-    ses_count = d.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    unsummarised = d.execute(
-        "SELECT COUNT(*) FROM messages WHERE summarised = 0"
-    ).fetchone()[0]
-    max_depth = d.execute(
-        "SELECT COALESCE(MAX(depth), 0) FROM summaries"
-    ).fetchone()[0]
+    """Routes through lcc_core.collect_status_dict so the MCP surface
+    reports identical fields to the CLI (U13)."""
+    import lcc_core
+    return lcc_core.format_status_human(lcc_core.collect_status_dict())
 
-    vault_size = os.path.getsize(str(db.VAULT_DB)) if db.VAULT_DB.exists() else 0
-    vault_mb = vault_size / (1024 * 1024)
 
-    cfg = db.load_config()
-    fp_line = ""
-    if cfg.get("fileContextEnabled", False):
-        tagged = d.execute(
-            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        distinct = d.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM messages "
-            "WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        cache_count = 0
-        try:
-            import file_context as fc
-            cache_count = len(fc._load_cache())
-        except Exception:
-            pass
-        fp_line = (
-            f"\n  Fingerprint:   {tagged} tagged messages across "
-            f"{distinct} files ({cache_count} cached)"
+_VALID_CONTRACT_ACTIONS = {"list", "show", "approve", "reject", "retract", "supersede"}
+_VALID_CONTRACT_STATUSES = {"Pending", "Active", "Retracted", "Rejected"}
+
+
+def _format_contract_row(row: dict) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(row.get("created_at", 0)))
+    parts = [
+        f"id: {row.get('id')}",
+        f"kind: {row.get('kind')}",
+        f"status: {row.get('status')}",
+        f"created: {ts}",
+        f"scope: {row.get('scope')}",
+    ]
+    if row.get("byline_session_id"):
+        parts.append(f"byline_session: {row['byline_session_id']}")
+    if row.get("byline_model"):
+        parts.append(f"byline_model: {row['byline_model']}")
+    if row.get("supersedes_id"):
+        parts.append(f"supersedes: {row['supersedes_id']}")
+    if row.get("conflicts_with"):
+        parts.append(f"conflicts_with: {row['conflicts_with']}")
+    parts.append("body:")
+    parts.append(row.get("body", ""))
+    return "\n".join(parts)
+
+
+def _do_contracts(args: dict) -> str:
+    """Dispatch the lcc_contracts MCP tool. Returns rendered text on
+    success, or a JSON structured error per TD7."""
+    action = args.get("action")
+    if action not in _VALID_CONTRACT_ACTIONS:
+        return _structured_error("invalid_action")
+
+    if action == "list":
+        status = args.get("status", "Pending")
+        if status not in _VALID_CONTRACT_STATUSES:
+            return _structured_error("invalid_status")
+        scope = args.get("scope") or None
+        rows = db.list_contracts(status=status, scope=scope)
+        if not rows:
+            return f"No contracts in status={status}" + (
+                f" scope={scope}" if scope else ""
+            )
+        out = [f"=== Contracts ({status}, {len(rows)} rows) ==="]
+        for r in rows:
+            out.append("")
+            out.append(_format_contract_row(r))
+        return "\n".join(out)
+
+    cid = args.get("id")
+    if not cid:
+        return _structured_error("missing_argument")
+
+    if action == "show":
+        row = db.get_contract(cid)
+        if row is None:
+            return _structured_error("contract_not_found")
+        return _format_contract_row(row)
+
+    if action == "approve":
+        ok = db.approve_contract(cid)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"approved {cid}"
+
+    if action == "reject":
+        ok = db.reject_contract(cid)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"rejected {cid}"
+
+    if action == "retract":
+        reason = args.get("reason")
+        if not reason:
+            return _structured_error("missing_argument")
+        ok = db.retract_contract(cid, reason=reason)
+        if not ok:
+            return _structured_error("contract_not_found")
+        return f"retracted {cid}"
+
+    if action == "supersede":
+        body = args.get("body")
+        if not body:
+            return _structured_error("missing_argument")
+        new_id = db.supersede_contract(
+            cid,
+            new_body=body,
+            byline_session_id=args.get("byline_session_id"),
+            byline_model=args.get("byline_model"),
         )
+        if new_id is None:
+            # Either the target was missing or the new body was a duplicate.
+            row = db.get_contract(cid)
+            if row is None:
+                return _structured_error("contract_not_found")
+            return _structured_error("duplicate_body")
+        return f"superseded {cid} -> {new_id}"
 
-    # Provider info (MCP parity with CLI status)
-    pinfo = summarise_mod.get_provider_info()
-    p_name = pinfo.get("provider") or "none"
-    p_model = pinfo.get("model") or "none"
-    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
-    p_err = pinfo.get("last_error") or "none"
-
-    return (
-        f"lossless-code vault status\n"
-        f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)\n"
-        f"  Sessions:      {ses_count}\n"
-        f"  Messages:      {msg_count} ({unsummarised} unsummarised)\n"
-        f"  Summaries:     {sum_count} (max depth: {max_depth})\n"
-        f"  Provider:      {p_name} ({p_model}){p_suffix}\n"
-        f"               Last error: {p_err}"
-        f"{fp_line}"
-    )
+    # Should be unreachable given the action check above.
+    return _structured_error("invalid_action")
 
 
 @server.call_tool()
@@ -400,23 +601,37 @@ async def call_tool(name: str, arguments: dict):
                     summary_id=arguments["summary_id"],
                     full=arguments.get("full", False),
                 )
+            elif arguments.get("span_id"):
+                text = _do_expand_span(
+                    span_id=arguments["span_id"],
+                    full=arguments.get("full", False),
+                )
             else:
-                text = "lcc_expand requires either `summary_id` or `file`."
+                text = "lcc_expand requires `summary_id`, `file`, or `span_id`."
         elif name == "lcc_context":
-            text = _do_context(
-                query=arguments.get("query", ""),
-                limit=arguments.get("limit", 5),
-            )
+            text = _do_context()
         elif name == "lcc_sessions":
             text = _do_sessions(limit=arguments.get("limit", 20))
         elif name == "lcc_handoff":
             text = _do_handoff(session_id=arguments.get("session_id", ""))
+        elif name == "lcc_contracts":
+            text = _do_contracts(arguments)
         elif name == "lcc_status":
             text = _do_status()
         else:
             text = f"Unknown tool: {name}"
     except Exception as e:
-        text = f"Error in {name}: {e}"
+        # Never leak raw exception strings into agent context. They carry
+        # filesystem paths, SQLite library internals, and stack-frame data
+        # that becomes load-bearing on the agent's next turn. Per TD7, every
+        # tool error returns a structured-error JSON with a static message.
+        # Operators get the real cause via stderr.
+        print(
+            f"[lcc-mcp] {name} raised {type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        text = _structured_error("internal_error")
 
     return [TextContent(type="text", text=text)]
 

@@ -204,85 +204,355 @@ def get_relevant_summaries(query: str = "", limit: int = 5) -> list[dict]:
     return db.get_top_summaries(limit=candidates)
 
 
+# ---------------------------------------------------------------------------
+# v1.2 reference bundle (U10)
+# ---------------------------------------------------------------------------
+#
+# Per TD8 the bundle ships items in this fixed order, recovery line FIRST so
+# the agent sees the recovery protocol before any content (LLM attention is
+# weighted toward start-of-context). Slot budgets are hard-coded constants
+# rather than user-configurable until v1.2.1 telemetry tells us how to tune.
+
+_BUNDLE_HEADER = (
+    "# Lossless Context (auto-injected, <=1000 tokens)\n"
+    "# Each line below carries its own Expand instruction. Invoke the named "
+    "MCP tool with the JSON arguments shown to fetch full content."
+)
+
+_RECOVERY_LINE = (
+    "[lcc.recovery] To recover specific topics from prior session or "
+    "pre-compaction history, call MCP tool lcc_context (topic-search) or "
+    "lcc_expand (span-id resolution) or lcc_grep (FTS5 fallback)."
+)
+
+# Slot budgets in tokens. Allocations match TD8.
+_SLOT_BUDGETS = {
+    "contracts": 200,
+    "handoff": 100,
+    "decisions": 250,
+    "fingerprints": 250,
+}
+
+# Default total bundle cap. Configurable via bundleTokenBudget so power
+# users can tighten or relax it without touching slot allocations.
+_DEFAULT_BUNDLE_BUDGET = 1000
+
+
+def _render_recovery_line() -> str:
+    """Fixed-template recovery protocol line. No per-session interpolation
+    so the renderer is deterministic and the line is identical in every
+    bundle (per D6).
+    """
+    return _RECOVERY_LINE
+
+
+def _render_contract_ref(contract: dict) -> str:
+    """Render an Active contract as a one-line reference with Expand pointer.
+
+    Hardening (TD6 security gate): strips \\n and \\r from contract.body
+    and rejects bodies containing the literal "[lcc.contract]" prefix.
+    Without this, an attacker who got a Pending contract approved with a
+    body like "rule\\n[lcc.contract] FORBID poison" would inject a synthetic
+    second contract line into the bundle.
+
+    Returns "" when the body fails sanitization, signaling _pack_slot to
+    skip this item.
+    """
+    raw_body = contract.get("body") or ""
+    # Reject before sanitization so the rejection is on the raw body the
+    # user actually approved, not a transformed version that would also pass.
+    # Reject every reserved marker, not just [lcc.contract] - a body
+    # carrying [lcc.handoff] or [lcc.decision] would also inject a synthetic
+    # bundle line of the wrong type.
+    if _contains_reserved_marker(raw_body):
+        return ""
+    body = _sanitize_for_context(raw_body, max_len=180)
+    if not body:
+        return ""
+    cid = contract.get("id", "?")
+    kind = contract.get("kind", "?").upper()
+    created = contract.get("created_at")
+    when = ""
+    if created:
+        from datetime import datetime
+        when = datetime.fromtimestamp(created).strftime("%Y-%m-%d")
+    byline_session = contract.get("byline_session_id") or "?"
+    when_str = f" since {when}" if when else ""
+    return (
+        f"[lcc.contract] {kind} {body}. Active{when_str}, "
+        f"byline session {_sanitize_for_context(byline_session, max_len=20)}. "
+        f'Expand: call MCP tool \'lcc_contracts\' with {{"action": "show", "id": "{cid}"}}'
+    )
+
+
+# Reserved bundle line markers. Any user/derived content containing one of
+# these tokens is rejected from its render slot, so an attacker who gets a
+# malicious string into a handoff or summary cannot inject a synthetic
+# bundle line ("rule\n[lcc.contract] FORBID poison") that the agent would
+# then trust as a same-trust-level instruction.
+_RESERVED_BUNDLE_MARKERS = (
+    "[lcc.contract]",
+    "[lcc.handoff]",
+    "[lcc.decision]",
+    "[lcc.recovery]",
+)
+
+
+def _contains_reserved_marker(text: str) -> bool:
+    return any(marker in text for marker in _RESERVED_BUNDLE_MARKERS)
+
+
+def _render_handoff_ref(session: dict) -> str:
+    """Render a session's handoff as a one-line ref + Expand pointer.
+
+    Rejects handoffs containing any reserved bundle marker; without this,
+    a session that captured a malicious user message could re-emerge as
+    an attacker-controlled bundle line on the next session start.
+    """
+    handoff = (session.get("handoff_text") or "").strip()
+    if not handoff:
+        return ""
+    if _contains_reserved_marker(handoff):
+        return ""
+    sid = session.get("session_id", "?")
+    summary_line = _sanitize_for_context(handoff.split("\n", 1)[0], max_len=200)
+    if not summary_line:
+        return ""
+    return (
+        f"[lcc.handoff] {summary_line}. "
+        f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
+    )
+
+
+def _render_decision_ref(summary: dict) -> str:
+    """Render a decision-typed summary as a one-line ref + Expand pointer.
+
+    Rejects decisions containing any reserved bundle marker for the same
+    reason as _render_handoff_ref: the summary text is derived from
+    captured turns and can carry adversarial content.
+    """
+    body = (summary.get("content") or "").strip()
+    if not body:
+        return ""
+    if _contains_reserved_marker(body):
+        return ""
+    summary_line = _sanitize_for_context(body.split("\n", 1)[0], max_len=200)
+    if not summary_line:
+        return ""
+    sid = summary.get("id", "?")
+    session_id = summary.get("session_id") or "?"
+    created = summary.get("created_at")
+    when = ""
+    if created:
+        from datetime import datetime
+        when = datetime.fromtimestamp(created).strftime("%Y-%m-%d")
+    when_str = f" dated {when}" if when else ""
+    return (
+        f"[lcc.decision] {summary_line} (session "
+        f"{_sanitize_for_context(session_id, max_len=20)}{when_str}). "
+        f'Expand: call MCP tool \'lcc_expand\' with {{"summary_id": "{sid}"}}'
+    )
+
+
+def _pack_slot(items: list[dict], slot_budget: int, renderer) -> tuple[list[str], int]:
+    """Greedy-pack rendered items into a single slot.
+
+    Returns (rendered_lines, tokens_used). Items that exceed the slot
+    budget after rendering are skipped rather than emitted truncated;
+    each renderer is responsible for keeping its output below the
+    per-item ceiling. Empty rendered output (sanitization rejection,
+    missing fields) is treated as a skip.
+    """
+    out: list[str] = []
+    used = 0
+    for item in items:
+        line = renderer(item)
+        if not line:
+            continue
+        line_tokens = estimate_tokens(line) + 1  # +1 for the joining newline
+        if used + line_tokens > slot_budget:
+            break
+        out.append(line)
+        used += line_tokens
+    return out, used
+
+
+def _list_active_contracts(working_dir: str, limit: int = 50) -> list[dict]:
+    """Return Active contracts scoped to project + global. Newest first.
+
+    Project-scoped contracts come first, then up to 2 global entries from
+    `dream/global/` (D8 mirroring). Combined limit is bounded so the
+    bundle assembler does not load an unbounded list.
+    """
+    project_rows = db.list_contracts(status="Active", scope="project", limit=limit)
+    global_rows = db.list_contracts(status="Active", scope="global", limit=2)
+    return list(project_rows) + list(global_rows)[:2]
+
+
+def _list_recent_decisions(working_dir: str, limit: int = 20) -> list[dict]:
+    """Return decision-typed summaries scoped to cwd, newest first."""
+    conn = db.get_db()
+    rows = conn.execute(
+        "SELECT s.* FROM summaries s "
+        "LEFT JOIN sessions sess ON s.session_id = sess.session_id "
+        "WHERE s.kind = 'decision' "
+        "  AND (? = '' OR sess.working_dir = ?) "
+        "ORDER BY s.created_at DESC LIMIT ?",
+        (working_dir or "", working_dir or "", limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _list_active_file_fingerprints(working_dir: str, limit: int = 10) -> list[tuple[str, list[dict]]]:
+    """Return (file_path, summaries) tuples for files with prior activity
+    in the cwd. Each entry is rendered via format_file_fingerprint."""
+    if not working_dir:
+        return []
+    conn = db.get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT file_path FROM messages "
+        "WHERE working_dir = ? AND file_path IS NOT NULL "
+        "ORDER BY timestamp DESC LIMIT ?",
+        (working_dir, limit),
+    ).fetchall()
+    out = []
+    for r in rows:
+        fp = r["file_path"]
+        if not fp:
+            continue
+        summaries = db.get_summaries_for_file(fp, limit=3)
+        if summaries:
+            out.append((fp, summaries))
+    return out
+
+
+def _pack_fingerprint_slot(
+    items: list[tuple[str, list[dict]]], slot_budget: int
+) -> tuple[list[str], int]:
+    """Specialised packer for file fingerprints which use the existing
+    format_file_fingerprint renderer (file_path + summaries pair)."""
+    out: list[str] = []
+    used = 0
+    for file_path, summaries in items:
+        # Per-fingerprint cap: ~50 tokens via format_file_fingerprint.
+        line = format_file_fingerprint(file_path, summaries, token_budget=50)
+        if not line:
+            continue
+        line_tokens = estimate_tokens(line) + 1
+        if used + line_tokens > slot_budget:
+            break
+        out.append(line)
+        used += line_tokens
+    return out, used
+
+
 def build_context(
     session_id: str = None,
     working_dir: str = "",
-    query: str = "",
-    limit: int = 5,
     config_override: dict = None,
 ) -> str:
-    """Build the context block to inject into Claude's session.
+    """Assemble the v1.2 reference bundle for SessionStart injection.
 
-    Uses budget-aware per-item packing: handoff and dream patterns are always
-    included (reserved budget), then summaries are packed greedily by FTS5
-    relevance rank (when query is present) or depth (when no query).
-    Individual summaries are never truncated mid-content.
+    The bundle is a token-budgeted reference set; the agent pulls depth on
+    demand via MCP tools (lcc_expand, lcc_grep, lcc_context). The legacy
+    full-text injection from v1.1 has been removed; set bundleEnabled=false
+    in config to opt out of injection entirely (graceful degradation).
+
+    Slot order (TD8): header + recovery line first, then contracts,
+    handoff ref, decisions, file fingerprints. The recovery line and
+    header are last to drop under R16 budget pressure; everything else
+    drops oldest-first per the slot ladder.
     """
     config = {**db.load_config(), **(config_override or {})}
 
-    ctx_budget = config.get("contextTokenBudget", 8000)
-
-    # --- Phase 1: Build reserved parts (always included) ---
-    reserved_parts = []
-    reserved_tokens = 0
-
-    # Handoff from previous session
-    handoff = get_handoff(session_id)
-    handoff_block = ""
-    if handoff:
-        handoff_block = f"## Previous Session Handoff\n{handoff}"
-        reserved_parts.append(handoff_block)
-        reserved_tokens += estimate_tokens(handoff_block)
-
-    # Dream patterns (project-specific + global)
-    dream_ctx = _load_dream_patterns(working_dir, config)
-    dream_block = ""
-    if dream_ctx:
-        dream_block = f"## Dream Patterns (extracted from history)\n{dream_ctx}"
-        reserved_parts.append(dream_block)
-        reserved_tokens += estimate_tokens(dream_block)
-
-    # --- Phase 2: Budget-aware summary packing ---
-    header = "# Lossless Context (auto-injected)\n"
-    section_header = "## Relevant Context (from conversation history)"
-    separator = "\n\n"
-
-    # Reserve tokens for header (always present when we have any content)
-    header_tokens = estimate_tokens(header)
-    # Separator tokens: one separator per reserved part, plus one for section_header
-    separator_tokens = estimate_tokens(separator) * (len(reserved_parts) + 1)
-
-    summary_budget = max(0, ctx_budget - reserved_tokens - header_tokens
-                         - estimate_tokens(section_header) - separator_tokens)
-    candidates = get_relevant_summaries(query, limit=limit)
-
-    selected_summaries = []
-    used_tokens = 0
-
-    for s in candidates:
-        content = s.get("content", "")
-        depth_label = f"depth-{s['depth']}" if "depth" in s else ""
-        item_text = f"### [{len(selected_summaries) + 1}] {depth_label}\n{content}"
-        item_tokens = estimate_tokens(item_text) + estimate_tokens(separator)
-
-        if used_tokens + item_tokens <= summary_budget:
-            selected_summaries.append(item_text)
-            used_tokens += item_tokens
-
-    # --- Phase 3: Assemble output ---
-    parts = []
-
-    if reserved_parts:
-        parts.extend(reserved_parts)
-
-    if selected_summaries:
-        parts.append(section_header)
-        parts.extend(selected_summaries)
-
-    if not parts:
+    # Rollback escape (TD9). When disabled, emit nothing; SessionStart
+    # hook then exits without additionalContext.
+    if not config.get("bundleEnabled", True):
         return ""
 
-    return header + separator.join(parts)
+    total_budget = int(config.get("bundleTokenBudget", _DEFAULT_BUNDLE_BUDGET))
+
+    # Recovery line and header are always emitted. Their cost is
+    # subtracted from total_budget before slot packing.
+    recovery_line = _render_recovery_line()
+    fixed_tokens = (
+        estimate_tokens(_BUNDLE_HEADER)
+        + estimate_tokens(recovery_line)
+        + 4  # newlines / blank-line separators
+    )
+    available = max(0, total_budget - fixed_tokens)
+
+    # Pack each slot in order. Each slot has a hard cap; if the total
+    # remaining budget runs out, later slots get less than their nominal
+    # allocation (R16 drop order: contracts and recovery line are last
+    # to lose space).
+    contracts = _list_active_contracts(working_dir)
+    contract_lines, contract_used = _pack_slot(
+        contracts,
+        min(_SLOT_BUDGETS["contracts"], available),
+        _render_contract_ref,
+    )
+    available -= contract_used
+
+    handoff_lines: list[str] = []
+    handoff_used = 0
+    if available > 0:
+        handoff_session = _get_handoff_session(session_id)
+        if handoff_session:
+            handoff_lines, handoff_used = _pack_slot(
+                [handoff_session],
+                min(_SLOT_BUDGETS["handoff"], available),
+                _render_handoff_ref,
+            )
+            available -= handoff_used
+
+    decision_lines: list[str] = []
+    if available > 0:
+        decisions = _list_recent_decisions(working_dir)
+        decision_lines, used = _pack_slot(
+            decisions,
+            min(_SLOT_BUDGETS["decisions"], available),
+            _render_decision_ref,
+        )
+        available -= used
+
+    fingerprint_lines: list[str] = []
+    if available > 0:
+        fingerprints = _list_active_file_fingerprints(working_dir)
+        fingerprint_lines, used = _pack_fingerprint_slot(
+            fingerprints,
+            min(_SLOT_BUDGETS["fingerprints"], available),
+        )
+        available -= used
+
+    # Bail out cleanly when there is no content beyond header + recovery
+    # line. Empty vault on first install: bundle still ships header +
+    # recovery line so the agent learns the protocol.
+    parts: list[str] = [_BUNDLE_HEADER, recovery_line]
+    if contract_lines:
+        parts.append("\n".join(contract_lines))
+    if handoff_lines:
+        parts.append("\n".join(handoff_lines))
+    if decision_lines:
+        parts.append("\n".join(decision_lines))
+    if fingerprint_lines:
+        parts.append("\n".join(fingerprint_lines))
+    return "\n\n".join(parts)
+
+
+def _get_handoff_session(session_id: str | None) -> dict | None:
+    """Return the most recent session row with a handoff, optionally
+    matching session_id when supplied. Used by the bundle's handoff slot.
+    """
+    if session_id:
+        s = db.get_session(session_id)
+        if s and s.get("handoff_text"):
+            return s
+    sessions = db.list_sessions(limit=10)
+    for s in sessions:
+        if s.get("handoff_text"):
+            return s
+    return None
 
 
 def main():

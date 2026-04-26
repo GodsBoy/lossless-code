@@ -28,7 +28,6 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-
 import db
 
 
@@ -314,8 +313,26 @@ class SummaryDetailScreen(ModalScreen[None]):
 
 
 # ---------------------------------------------------------------------------
+# Contracts-tab modals
+# ---------------------------------------------------------------------------
+# ContractDetailScreen, SupersedeBodyScreen, and RetractionReasonPrompt
+# live in tui/contracts_view.py. Together with the filter constants they
+# kept this module 100+ lines over the project's 800-line cap (see
+# docs/solutions/architecture-decisions/extract-search-orchestration-layer.md).
+
+from contracts_view import (  # noqa: E402
+    ContractDetailScreen,
+    SupersedeBodyScreen,
+    RetractionReasonPrompt,
+    CONTRACT_FILTERS as _CONTRACT_FILTERS,
+    CONTRACT_EMPTY_MESSAGES as _CONTRACT_EMPTY_MESSAGES,
+)
+
+
+# ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
+
 
 class LccTui(App):
     """lcc-tui — Terminal UI for lossless-code."""
@@ -355,7 +372,16 @@ class LccTui(App):
         Binding("2", "tab_search", "Search", show=False),
         Binding("3", "tab_summaries", "Summaries", show=False),
         Binding("4", "tab_stats", "Stats", show=False),
+        Binding("5", "tab_contracts", "Contracts", show=False),
+        # Contracts-tab actions (no-op when other tabs are active)
+        Binding("a", "approve_contract", "Approve", show=False),
+        Binding("r", "reject_or_retract_contract", "Reject/Retract", show=False),
+        Binding("s", "supersede_contract", "Supersede", show=False),
+        Binding("t", "cycle_contracts_filter", "Cycle filter", show=False),
     ]
+
+    # Reactive: which status filter the Contracts tab is showing.
+    contracts_filter = reactive("Pending")
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -369,12 +395,20 @@ class LccTui(App):
                 yield DataTable(id="summaries-table")
             with TabPane("Stats", id="stats"):
                 yield VerticalScroll(id="stats-container")
+            with TabPane("Contracts", id="contracts"):
+                yield Static(
+                    f"Filter: [bold]Pending[/bold]    "
+                    f"(t to cycle, a approve, r reject/retract, s supersede, Enter for detail)",
+                    id="contracts-header",
+                )
+                yield DataTable(id="contracts-table")
         yield Footer()
 
     def on_mount(self) -> None:
         self._load_sessions()
         self._load_summaries()
         self._load_stats()
+        self._load_contracts()
 
     # ── Data loading ──────────────────────────────────────────────────
 
@@ -444,6 +478,69 @@ class LccTui(App):
             container.mount(Static(f"[bold]{label}[/bold]", classes="stat-label"))
             container.mount(Static(value, classes="stat-value"))
 
+    def _load_contracts(self) -> None:
+        """Populate the contracts DataTable for the current filter."""
+        table = self.query_one("#contracts-table", DataTable)
+        table.cursor_type = "row"
+        table.clear(columns=True)
+        table.add_columns(
+            "ID", "Kind", "Body", "Byline", "Created", "Conflicts"
+        )
+        rows = db.list_contracts(status=self.contracts_filter)
+        if not rows:
+            table.add_row(
+                "-",
+                "-",
+                _CONTRACT_EMPTY_MESSAGES[self.contracts_filter],
+                "",
+                "",
+                "",
+                key=None,
+            )
+            return
+        for r in rows:
+            byline = ""
+            if r.get("byline_session_id"):
+                byline = _trunc(r["byline_session_id"], 16)
+            if r.get("byline_model"):
+                byline = (byline + "@" if byline else "") + _trunc(r["byline_model"], 24)
+            table.add_row(
+                _trunc(r["id"], 18),
+                r["kind"],
+                _trunc(r.get("body", ""), 60),
+                byline or "(none)",
+                _ts(r.get("created_at")),
+                _trunc(r.get("conflicts_with") or "", 18),
+                key=r["id"],
+            )
+
+    def _refresh_contracts_header(self) -> None:
+        header = self.query_one("#contracts-header", Static)
+        header.update(
+            f"Filter: [bold]{self.contracts_filter}[/bold]    "
+            f"(t to cycle, a approve, r reject/retract, s supersede, Enter for detail)"
+        )
+
+    def _selected_contract_id(self) -> str | None:
+        """Return the id under the Contracts table cursor, or None."""
+        try:
+            table = self.query_one("#contracts-table", DataTable)
+        except Exception:
+            return None
+        if table.row_count == 0:
+            return None
+        try:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except Exception:
+            return None
+        return row_key.value if row_key else None
+
+    def _is_contracts_tab_active(self) -> bool:
+        try:
+            return self.query_one(TabbedContent).active == "contracts"
+        except Exception:
+            return False
+
     # ── Actions ───────────────────────────────────────────────────────
 
     def action_search(self) -> None:
@@ -462,6 +559,86 @@ class LccTui(App):
     def action_tab_stats(self) -> None:
         self.query_one(TabbedContent).active = "stats"
 
+    def action_tab_contracts(self) -> None:
+        self.query_one(TabbedContent).active = "contracts"
+
+    def action_cycle_contracts_filter(self) -> None:
+        """Cycle the Contracts tab filter through Pending -> Active -> Retracted."""
+        if not self._is_contracts_tab_active():
+            return
+        idx = _CONTRACT_FILTERS.index(self.contracts_filter)
+        self.contracts_filter = _CONTRACT_FILTERS[(idx + 1) % len(_CONTRACT_FILTERS)]
+        self._refresh_contracts_header()
+        self._load_contracts()
+
+    def action_approve_contract(self) -> None:
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        # Only Pending rows can be approved. Quietly ignore on other filters.
+        contract = db.get_contract(cid)
+        if not contract or contract["status"] != "Pending":
+            self.bell()
+            return
+        if db.approve_contract(cid):
+            self._load_contracts()
+
+    def action_reject_or_retract_contract(self) -> None:
+        """`r` flips Pending -> Rejected, or opens reason prompt for Active."""
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        contract = db.get_contract(cid)
+        if not contract:
+            return
+        if contract["status"] == "Pending":
+            if db.reject_contract(cid):
+                self._load_contracts()
+        elif contract["status"] == "Active":
+            self.push_screen(
+                RetractionReasonPrompt(cid),
+                lambda reason: self._on_retract_reason(cid, reason),
+            )
+        else:
+            self.bell()
+
+    def _on_retract_reason(self, cid: str, reason: str | None) -> None:
+        if not reason:
+            return
+        try:
+            ok = db.retract_contract(cid, reason=reason)
+        except ValueError:
+            return
+        if ok:
+            self._load_contracts()
+
+    def action_supersede_contract(self) -> None:
+        if not self._is_contracts_tab_active():
+            return
+        cid = self._selected_contract_id()
+        if not cid:
+            return
+        contract = db.get_contract(cid)
+        if not contract or contract["status"] != "Active":
+            self.bell()
+            return
+        old_body = contract.get("body", "")
+        self.push_screen(
+            SupersedeBodyScreen(cid, old_body),
+            lambda new_body: self._on_supersede_body(cid, new_body),
+        )
+
+    def _on_supersede_body(self, cid: str, new_body: str | None) -> None:
+        if not new_body:
+            return
+        new_id = db.supersede_contract(cid, new_body=new_body)
+        if new_id:
+            self._load_contracts()
+
     # ── Row selection ─────────────────────────────────────────────────
 
     @on(DataTable.RowSelected, "#sessions-table")
@@ -473,6 +650,11 @@ class LccTui(App):
     def summary_selected(self, event: DataTable.RowSelected) -> None:
         if event.row_key and event.row_key.value:
             self.push_screen(SummaryDetailScreen(event.row_key.value))
+
+    @on(DataTable.RowSelected, "#contracts-table")
+    def contract_selected(self, event: DataTable.RowSelected) -> None:
+        if event.row_key and event.row_key.value:
+            self.push_screen(ContractDetailScreen(event.row_key.value))
 
     # ── Inline search ─────────────────────────────────────────────────
 

@@ -272,6 +272,148 @@ class TestDatabase(unittest.TestCase):
     def test_count_session_messages_nonexistent(self):
         self.assertEqual(db.count_session_messages("nonexistent-session"), 0)
 
+    # --- v1.2 U1: OTel span columns on messages ---
+
+    def test_span_columns_exist(self):
+        conn = db.get_db()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        for col in ("parent_message_id", "span_kind", "tool_call_id", "attributes"):
+            self.assertIn(col, cols)
+
+    def test_span_columns_nullable_for_pre_migration_rows(self):
+        # store_message without span kwargs must succeed and leave columns NULL
+        db.ensure_session("span-null-session", "/tmp")
+        msg_id = db.store_message("span-null-session", "user", "no-span-info")
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT parent_message_id, span_kind, tool_call_id, attributes "
+            "FROM messages WHERE id = ?", (msg_id,)
+        ).fetchone()
+        self.assertIsNone(row["parent_message_id"])
+        self.assertIsNone(row["span_kind"])
+        self.assertIsNone(row["tool_call_id"])
+        self.assertIsNone(row["attributes"])
+
+    def test_span_indexes_exist(self):
+        conn = db.get_db()
+        idx_names = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        ]
+        for idx in ("idx_messages_span_kind", "idx_messages_parent_id", "idx_messages_tool_call_id"):
+            self.assertIn(idx, idx_names)
+
+    def test_get_db_idempotent_after_v12_migrations(self):
+        """Re-running get_db must be a no-op. Catches any v1.2 migration that
+        forgets the narrow except sqlite3.OperationalError wrapper."""
+        # First call already happened in setUpClass. Reset _conn and call again.
+        db._conn = None
+        conn = db.get_db()
+        # Columns still present, no exception raised
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        self.assertIn("parent_message_id", cols)
+
+    def test_store_message_with_span_fields(self):
+        db.ensure_session("span-write", "/tmp")
+        msg_id = db.store_message(
+            session_id="span-write",
+            role="tool",
+            content="Read: /tmp/x.py",
+            tool_name="Read",
+            span_kind="tool_call",
+            tool_call_id="toolu_abc123",
+            attributes={"tool_name": "Read", "error": False},
+        )
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT span_kind, tool_call_id, attributes FROM messages WHERE id = ?",
+            (msg_id,),
+        ).fetchone()
+        self.assertEqual(row["span_kind"], "tool_call")
+        self.assertEqual(row["tool_call_id"], "toolu_abc123")
+        # attributes is stored as JSON; cap_attributes_json round-trips
+        import json as _json
+        attrs = _json.loads(row["attributes"])
+        self.assertEqual(attrs["tool_name"], "Read")
+
+    def test_store_message_rejects_non_dict_attributes(self):
+        """Shape validation: non-dict attributes logged + stored as {}."""
+        import io
+        import contextlib
+
+        db.ensure_session("bad-attrs", "/tmp")
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            msg_id = db.store_message(
+                session_id="bad-attrs",
+                role="tool",
+                content="x",
+                attributes=[1, 2, 3],  # list, not dict
+            )
+        self.assertIn("must be a dict", captured.getvalue())
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT attributes FROM messages WHERE id = ?", (msg_id,)
+        ).fetchone()
+        # cap_attributes_json on {} returns the literal "{}"
+        self.assertEqual(row["attributes"], "{}")
+
+    def test_store_message_backwards_compatible_without_span_kwargs(self):
+        """Existing callers that don't pass span kwargs still work."""
+        db.ensure_session("compat", "/tmp")
+        msg_id = db.store_message(
+            session_id="compat",
+            role="user",
+            content="legacy call shape",
+            tool_name="",
+            working_dir="/tmp",
+        )
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT span_kind, tool_call_id, attributes, parent_message_id "
+            "FROM messages WHERE id = ?", (msg_id,),
+        ).fetchone()
+        self.assertIsNone(row["span_kind"])
+        self.assertIsNone(row["tool_call_id"])
+        self.assertIsNone(row["attributes"])
+        self.assertIsNone(row["parent_message_id"])
+
+    def test_vault_db_permissions_locked_down(self):
+        """vault.db must be 0o600 (owner-only). Closes the world-readable gap
+        before v1.2 contracts.body and messages.attributes inherit it."""
+        import stat
+        st = os.stat(db.VAULT_DB)
+        mode = stat.S_IMODE(st.st_mode)
+        # On some shared filesystems chmod silently no-ops; accept either
+        # 0o600 (preferred) or any mode that excludes group/other read+write.
+        group_other_writable = bool(mode & 0o077)
+        self.assertFalse(
+            group_other_writable,
+            f"vault.db mode {oct(mode)} grants group/other access. Security gate violated.",
+        )
+
+    def test_vault_wal_shm_permissions_locked_down(self):
+        """WAL and SHM sidecars must inherit vault.db's 0o600. Without this
+        the same secrets that motivate vault.db chmod leak via the
+        write-ahead log (which contains every uncheckpointed page).
+        """
+        import stat
+        # Force a write so WAL/SHM exist on disk.
+        conn = db.get_db()
+        conn.execute("CREATE TABLE IF NOT EXISTS _wal_probe (x)")
+        conn.commit()
+        for sidecar in ("vault.db-wal", "vault.db-shm"):
+            path = db.VAULT_DB.with_name(sidecar)
+            if not path.exists():
+                continue
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            self.assertFalse(
+                bool(mode & 0o077),
+                f"{sidecar} mode {oct(mode)} grants group/other access. Security gate violated.",
+            )
+
     # --- Session filtering (lossless-claw parity) ---
 
     def test_stateless_column_exists(self):

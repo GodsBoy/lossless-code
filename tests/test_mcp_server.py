@@ -2,6 +2,7 @@
 """Tests for lossless-code MCP server."""
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -18,7 +19,9 @@ import db
 from server import (
     _do_grep,
     _do_expand,
+    _do_expand_span,
     _do_context,
+    _do_contracts,
     _do_sessions,
     _do_handoff,
     _do_status,
@@ -115,13 +118,229 @@ class TestMCPToolFunctions(unittest.TestCase):
         result = _do_expand(self.test_summary_id, full=True)
         self.assertIn(self.test_summary_id, result)
 
+    # --- expand_span (v1.2 U4) ---
+
+    def test_expand_span_returns_chain(self):
+        """Happy path: walk parent chain upward from a leaf message."""
+        import json as _json
+
+        db.ensure_session("span-mcp", "/tmp")
+        # Build a 3-deep chain manually so we control parent ids exactly.
+        conn = db.get_db()
+        import time as _time
+        ts = int(_time.time() * 1000)
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'user', 'root msg', '', '', ?, 'user_prompt', NULL)",
+            ("span-mcp", ts),
+        )
+        root_id = cur.lastrowid
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'assistant', 'mid msg', '', '', ?, 'assistant_reply', ?)",
+            ("span-mcp", ts + 1, root_id),
+        )
+        mid_id = cur.lastrowid
+        cur = conn.execute(
+            "INSERT INTO messages (session_id, turn_id, role, content, tool_name, "
+            "working_dir, timestamp, span_kind, parent_message_id) "
+            "VALUES (?, '', 'tool', 'leaf msg', 'Read', '', ?, 'tool_call', ?)",
+            ("span-mcp", ts + 2, mid_id),
+        )
+        leaf_id = cur.lastrowid
+        conn.commit()
+
+        result = _do_expand_span(str(leaf_id))
+        self.assertNotIn('"error"', result, f"Expected text response, got JSON error: {result}")
+        self.assertIn("Span chain", result)
+        self.assertIn("3 hops", result)
+        # Leaf-first ordering: hop 0 is the leaf
+        self.assertIn("hop 0", result)
+        self.assertIn("hop 2", result)
+
+    def test_expand_span_unknown_id_returns_structured_error(self):
+        import json as _json
+        result = _do_expand_span("99999999")
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "span_not_found")
+        # Sanitized message: no filesystem paths or stack traces.
+        self.assertNotIn("/", payload["error"]["message"])
+
+    def test_expand_span_invalid_id_returns_span_not_found(self):
+        import json as _json
+        result = _do_expand_span("not-a-number")
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "span_not_found")
+
+    def test_expand_span_oversized_chain_returns_expand_too_large(self):
+        """When the rendered chain exceeds the soft cap, return structured error."""
+        import json as _json
+
+        db.ensure_session("oversized-span", "/tmp")
+        conn = db.get_db()
+        import time as _time
+        # Build a chain with very long content to exceed _SPAN_EXPAND_MAX_CHARS.
+        big_content = "x" * 600  # 600 chars per hop -> ~12K chars across 20 hops
+        ts = int(_time.time() * 1000)
+        parent = None
+        leaf_id = None
+        for i in range(25):
+            cur = conn.execute(
+                "INSERT INTO messages (session_id, turn_id, role, content, "
+                "tool_name, working_dir, timestamp, span_kind, parent_message_id) "
+                "VALUES (?, '', 'user', ?, '', '', ?, 'user_prompt', ?)",
+                ("oversized-span", big_content, ts + i, parent),
+            )
+            parent = cur.lastrowid
+            leaf_id = cur.lastrowid
+        conn.commit()
+
+        # full=False should trigger the cap. content is truncated per-line, but
+        # 25 hops with 500-char-truncated lines still pushes well past 8K.
+        result = _do_expand_span(str(leaf_id), full=False)
+        if '"error"' in result:
+            payload = _json.loads(result)
+            self.assertEqual(payload["error"]["code"], "expand_too_large")
+        else:
+            # If the per-line truncation happened to fit, that's also acceptable.
+            self.assertIn("Span chain", result)
+
+        # full=True must NOT bypass the chain cap. Without per-line
+        # truncation 25 hops * 600 chars = 15K, comfortably past 8K.
+        result_full = _do_expand_span(str(leaf_id), full=True)
+        payload = _json.loads(result_full)
+        self.assertEqual(payload["error"]["code"], "expand_too_large")
+
+    def test_expand_span_error_message_no_str_exception_leakage(self):
+        """Sanitization rule: error messages are static strings, no path leaks."""
+        import json as _json
+        from server import _STRUCTURED_ERROR_MESSAGES
+
+        for code, msg in _STRUCTURED_ERROR_MESSAGES.items():
+            self.assertNotIn("/", msg, f"code={code} leaks path-like char in: {msg}")
+            self.assertNotIn("Traceback", msg)
+            self.assertNotIn("sqlite3", msg)
+
+    # --- contracts (v1.2 U7) ---
+
+    def test_contracts_list_empty(self):
+        # Clean slate
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        result = _do_contracts({"action": "list"})
+        self.assertIn("No contracts", result)
+        self.assertNotIn('"error"', result)
+
+    def test_contracts_list_pending(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="contracts list test rule unique")
+        result = _do_contracts({"action": "list", "status": "Pending"})
+        self.assertIn(cid, result)
+        self.assertIn("forbid", result)
+
+    def test_contracts_show_known(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="prefer", body="show test body unique")
+        result = _do_contracts({"action": "show", "id": cid})
+        self.assertIn(cid, result)
+        self.assertIn("prefer", result)
+        self.assertIn("show test body unique", result)
+
+    def test_contracts_show_unknown_returns_structured_error(self):
+        import json as _json
+        result = _do_contracts({"action": "show", "id": "con_nonexistent"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "contract_not_found")
+        # Sanitization: no path leakage
+        self.assertNotIn("/", payload["error"]["message"])
+
+    def test_contracts_approve_pending(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="approve test rule unique")
+        result = _do_contracts({"action": "approve", "id": cid})
+        self.assertIn(cid, result)
+        self.assertIn("approved", result)
+        self.assertEqual(db.get_contract(cid)["status"], "Active")
+
+    def test_contracts_approve_unknown_returns_structured_error(self):
+        import json as _json
+        result = _do_contracts({"action": "approve", "id": "con_unknown"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "contract_not_found")
+
+    def test_contracts_retract_active(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        cid = db.store_contract_candidate(kind="forbid", body="retract test rule unique")
+        db.approve_contract(cid)
+        result = _do_contracts({
+            "action": "retract", "id": cid, "reason": "scope changed"
+        })
+        self.assertIn("retracted", result)
+        self.assertEqual(db.get_contract(cid)["status"], "Retracted")
+
+    def test_contracts_retract_missing_reason(self):
+        import json as _json
+        result = _do_contracts({"action": "retract", "id": "con_x"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "missing_argument")
+
+    def test_contracts_supersede_active(self):
+        conn = db.get_db()
+        conn.execute("DELETE FROM contracts")
+        conn.commit()
+        old_id = db.store_contract_candidate(kind="forbid", body="supersede test old unique")
+        db.approve_contract(old_id)
+        result = _do_contracts({
+            "action": "supersede",
+            "id": old_id,
+            "body": "supersede test new unique replacement",
+        })
+        self.assertIn("superseded", result)
+        self.assertIn(old_id, result)
+        self.assertEqual(db.get_contract(old_id)["status"], "Retracted")
+
+    def test_contracts_invalid_action(self):
+        import json as _json
+        result = _do_contracts({"action": "delete"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "invalid_action")
+
+    def test_contracts_missing_id(self):
+        import json as _json
+        result = _do_contracts({"action": "approve"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "missing_argument")
+
+    def test_contracts_invalid_status(self):
+        import json as _json
+        result = _do_contracts({"action": "list", "status": "Bogus"})
+        payload = _json.loads(result)
+        self.assertEqual(payload["error"]["code"], "invalid_status")
+
+    def test_contracts_in_TOOLS_registry(self):
+        names = [t.name for t in TOOLS]
+        self.assertIn("lcc_contracts", names)
+
     # --- context ---
 
-    def test_context_with_query(self):
-        result = _do_context(query="auth")
-        self.assertIsInstance(result, str)
-
-    def test_context_no_query(self):
+    def test_context_takes_no_arguments(self):
+        """v1.2: lcc_context returns the SessionStart reference bundle.
+        It accepts no arguments; query/limit were removed from the schema
+        because build_context never honored them."""
+        import inspect
+        sig = inspect.signature(_do_context)
+        self.assertEqual(list(sig.parameters), [])
         result = _do_context()
         self.assertIsInstance(result, str)
 
@@ -185,9 +404,14 @@ class TestMCPProtocol(unittest.TestCase):
 
     def test_list_tools_returns_all(self):
         tools = self._run(list_tools())
-        self.assertEqual(len(tools), 6)
+        # v1.2 U7 added lcc_contracts to the registry.
+        self.assertEqual(len(tools), 7)
         names = {t.name for t in tools}
-        expected = {"lcc_grep", "lcc_expand", "lcc_context", "lcc_sessions", "lcc_handoff", "lcc_status"}
+        expected = {
+            "lcc_grep", "lcc_expand", "lcc_context",
+            "lcc_sessions", "lcc_handoff", "lcc_status",
+            "lcc_contracts",
+        }
         self.assertEqual(names, expected)
 
     def test_tool_schemas_valid(self):
@@ -236,6 +460,21 @@ class TestMCPProtocol(unittest.TestCase):
         result = self._run(call_tool("nonexistent_tool", {}))
         self.assertEqual(len(result), 1)
         self.assertIn("Unknown tool", result[0].text)
+
+    def test_call_tool_sanitizes_unhandled_exceptions(self):
+        """Exceptions inside a handler must surface as a structured error,
+        never as raw exception text. Raw text leaks filesystem paths and
+        SQLite library internals into agent context.
+        """
+        # lcc_grep with no query argument used to surface a KeyError as
+        # "Error in lcc_grep: 'query'" — bypassing the structured-error
+        # contract for every other failure path.
+        result = self._run(call_tool("lcc_grep", {}))
+        self.assertEqual(len(result), 1)
+        payload = json.loads(result[0].text)
+        self.assertEqual(payload["error"]["code"], "internal_error")
+        self.assertNotIn("KeyError", result[0].text)
+        self.assertNotIn("'query'", result[0].text)
 
     def test_call_tool_returns_text_content(self):
         """All tool calls return TextContent objects."""

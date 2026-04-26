@@ -76,6 +76,47 @@ class TestTuiImport(unittest.TestCase):
         self.assertIsNotNone(screen)
         self.assertEqual(screen.summary_id, "sum_abc123")
 
+    # --- v1.2 U8: Contracts tab modals + filter cycling ---
+
+    def test_contract_detail_instantiation(self):
+        from lcc_tui import ContractDetailScreen
+        screen = ContractDetailScreen("con_abc123")
+        self.assertIsNotNone(screen)
+        self.assertEqual(screen.contract_id, "con_abc123")
+
+    def test_supersede_screen_instantiation(self):
+        from lcc_tui import SupersedeBodyScreen
+        screen = SupersedeBodyScreen("con_x", "old body text")
+        self.assertEqual(screen.contract_id, "con_x")
+        self.assertEqual(screen.old_body, "old body text")
+
+    def test_retraction_prompt_instantiation(self):
+        from lcc_tui import RetractionReasonPrompt
+        prompt = RetractionReasonPrompt("con_y")
+        self.assertEqual(prompt.contract_id, "con_y")
+
+    def test_contract_filter_cycle_covers_all_statuses(self):
+        from lcc_tui import _CONTRACT_FILTERS, _CONTRACT_EMPTY_MESSAGES
+        self.assertEqual(_CONTRACT_FILTERS, ["Pending", "Active", "Retracted"])
+        # Every filter has an empty-state placeholder message defined.
+        for status in _CONTRACT_FILTERS:
+            self.assertIn(status, _CONTRACT_EMPTY_MESSAGES)
+            msg = _CONTRACT_EMPTY_MESSAGES[status]
+            # Each message is non-trivial guidance, not a stub.
+            self.assertGreater(len(msg), 20)
+
+    def test_contracts_filter_default_is_pending(self):
+        from lcc_tui import LccTui
+        app = LccTui()
+        self.assertEqual(app.contracts_filter, "Pending")
+
+    def test_contracts_keybindings_present(self):
+        """v1.2 U8 keybindings (a, r, s, t, 5) must be wired."""
+        from lcc_tui import LccTui
+        keys = {b.key for b in LccTui.BINDINGS}
+        for required in ("a", "r", "s", "t", "5"):
+            self.assertIn(required, keys, f"missing keybinding: {required}")
+
 
 class TestTuiWithData(unittest.TestCase):
     """Test TUI components with actual data in the vault."""

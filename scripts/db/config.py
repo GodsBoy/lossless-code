@@ -46,6 +46,12 @@ DEFAULT_CONFIG = {
     "vectorBackend": "auto",
     # Fingerprint file context (v1.3.0, default off)
     "fileContextEnabled": False,
+    # v1.2 compaction-aware bundle (U10 + U6)
+    "bundleEnabled": True,
+    "bundleTokenBudget": 1000,
+    "contractsModel": None,  # Falls back to dreamModel then summaryModel
+    "contractsPerCycleLimit": 10,
+    "decisionsPerCycleLimit": 15,
 }
 
 
@@ -71,9 +77,19 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     from . import CONFIG_PATH, VAULT_DIR
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(VAULT_DIR, 0o700)
+    except OSError:
+        pass  # Best-effort on shared/readonly mounts
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+    # Lock down config.json. May contain provider config, base URLs, and model
+    # selections that should not be world-readable on shared machines.
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
 
 
 __all__ = ["DEFAULT_CONFIG", "load_config", "save_config"]

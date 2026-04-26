@@ -63,6 +63,9 @@ def cmd_grep(args):
 
 def cmd_expand(args):
     """Expand a summary node to its source messages/summaries."""
+    if getattr(args, "span_id", None):
+        cmd_expand_span(args)
+        return
     if getattr(args, "file", None):
         cfg = db.load_config()
         if not cfg.get("fileContextEnabled", False):
@@ -119,12 +122,33 @@ def cmd_expand(args):
                 print(f"{content}\n")
 
 
+def cmd_expand_span(args):
+    """Walk the parent chain from a message id (CLI parity with the MCP
+    span_id mode). Mirrors the per-line truncation rules but skips the
+    chain-total cap because CLI consumers are humans, not agent context.
+    """
+    try:
+        msg_id = int(args.span_id)
+    except (TypeError, ValueError):
+        print(f"Invalid span id: {args.span_id}")
+        return
+    chain = db.get_span_chain(msg_id)
+    if not chain:
+        print(f"No span chain rooted at message {msg_id}.")
+        return
+    print(f"=== Span chain for message {msg_id} ({len(chain)} hops) ===")
+    for span in chain:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        kind = span.get("span_kind") or "?"
+        content = span["content"]
+        if len(content) > 500 and not args.full:
+            content = content[:500] + "..."
+        print(f"[hop {span['hop']}] {ts} ({kind}, id={span['id']}) {content}\n")
+
+
 def cmd_context(args):
-    """Surface top N relevant DAG nodes for a query."""
-    context = inject_context.build_context(
-        query=args.query,
-        limit=args.limit,
-    )
+    """Print the v1.2 reference bundle that SessionStart would inject."""
+    context = inject_context.build_context()
     if context:
         print(context)
     else:
@@ -206,92 +230,11 @@ def cmd_summarise(args):
 
 
 def cmd_status(args):
-    """Show vault statistics."""
-    d = db.get_db()
-    msg_count = d.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    sum_count = d.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
-    ses_count = d.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    unsummarised = d.execute("SELECT COUNT(*) FROM messages WHERE summarised = 0").fetchone()[0]
-    max_depth = d.execute("SELECT COALESCE(MAX(depth), 0) FROM summaries").fetchone()[0]
-
-    vault_size = os.path.getsize(db.VAULT_DB) if db.VAULT_DB.exists() else 0
-    vault_mb = vault_size / (1024 * 1024)
-
-    # Dream stats
-    dream_count = d.execute("SELECT COUNT(*) FROM dream_log").fetchone()[0]
-    last_dream_row = d.execute("SELECT dreamed_at FROM dream_log ORDER BY dreamed_at DESC LIMIT 1").fetchone()
-    last_dream = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_dream_row[0])) if last_dream_row else "never"
-    consolidated = d.execute("SELECT COUNT(*) FROM summaries WHERE consolidated = 1").fetchone()[0]
-
-    cfg = db.load_config()
-    # Vector search status
-    embed_enabled = cfg.get("embeddingEnabled", False)
-    embed_model = cfg.get("embeddingModel", "BAAI/bge-small-en-v1.5")
-    if embed_enabled:
-        provider = embed_mod.detect_provider(cfg)
-        cov = db.get_embedding_model_coverage(embed_model)
-        if provider and provider != "numpy":
-            vec_status = f"active ({provider}, {embed_model})"
-        else:
-            vec_status = f"inactive (no provider available — pip install lossless-code[embed])"
-        embed_line = (
-            f"  Embeddings:    {cov['embedded']:,} / {cov['total']:,} messages indexed"
-            f"  ({cov['pending']:,} pending)"
-        )
-    else:
-        vec_status = "inactive (embeddingEnabled: false)"
-        embed_line = None
-
-    print(f"lossless-code vault status")
-    print(f"  Vault:         {db.VAULT_DB} ({vault_mb:.2f} MB)")
-    print(f"  Sessions:      {ses_count}")
-    print(f"  Messages:      {msg_count} ({unsummarised} unsummarised)")
-    print(f"  Summaries:     {sum_count} (max depth: {max_depth}, {consolidated} consolidated)")
-    print(f"  Dreams:        {dream_count} (last: {last_dream})")
-    print(f"  Vector search: {vec_status}")
-    if embed_line:
-        print(embed_line)
-
-    # Provider info (R5)
-    pinfo = summarise_mod.get_provider_info()
-    p_name = pinfo.get("provider") or "none"
-    p_model = pinfo.get("model") or "none"
-    p_suffix = " via auto-detect" if pinfo.get("auto_detected") else ""
-    p_err = pinfo.get("last_error")
-    if p_err:
-        err_time = pinfo.get("last_error_time")
-        if err_time:
-            ago = int(time.time() - err_time)
-            if ago < 3600:
-                err_ago = f"{ago // 60}m ago"
-            else:
-                err_ago = f"{ago // 3600}h ago"
-        else:
-            err_ago = "unknown"
-        err_str = f"{p_err} {err_ago}"
-    else:
-        err_str = "none"
-    print(f"  Provider:      {p_name} ({p_model}){p_suffix}")
-    print(f"               Last error: {err_str}")
-
-    if cfg.get("fileContextEnabled", False):
-        tagged = d.execute(
-            "SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        distinct = d.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM messages "
-            "WHERE file_path IS NOT NULL"
-        ).fetchone()[0]
-        cache_count = 0
-        try:
-            import file_context as fc
-            cache_count = len(fc._load_cache())
-        except Exception:
-            pass
-        print(
-            f"  Fingerprint:   {tagged} tagged messages across "
-            f"{distinct} files ({cache_count} cached)"
-        )
+    """Show vault statistics. Routes through lcc_core.collect_status_dict
+    so the CLI and MCP surfaces report identical fields (U13)."""
+    import lcc_core
+    status = lcc_core.collect_status_dict(working_dir=os.getcwd())
+    print(lcc_core.format_status_human(status))
 
 
 def cmd_reindex(args):
@@ -315,6 +258,115 @@ def cmd_dream(args):
     cfg = db.load_config()
     report = dream_mod.run_dream(scope, working_dir, cfg)
     print(report)
+
+
+def _print_contract_row(row: dict) -> None:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(row.get("created_at", 0)))
+    print(f"id:     {row['id']}")
+    print(f"kind:   {row['kind']}")
+    print(f"status: {row['status']}")
+    print(f"created: {ts}")
+    print(f"scope:  {row.get('scope')}")
+    if row.get("byline_session_id"):
+        print(f"byline_session: {row['byline_session_id']}")
+    if row.get("byline_model"):
+        print(f"byline_model:   {row['byline_model']}")
+    if row.get("supersedes_id"):
+        print(f"supersedes:     {row['supersedes_id']}")
+    if row.get("conflicts_with"):
+        print(f"conflicts_with: {row['conflicts_with']}")
+    print("body:")
+    print(row.get("body", ""))
+
+
+def cmd_contracts(args):
+    """Behavior-contract registry CLI. Mirrors the lcc_contracts MCP tool.
+
+    Each action exits 0 on success, 1 on user-visible error. Errors print
+    to stderr; success output goes to stdout.
+    """
+    action = args.action
+    if action == "list":
+        status = args.status or "Pending"
+        rows = db.list_contracts(status=status, scope=args.scope)
+        if not rows:
+            scope_str = f" scope={args.scope}" if args.scope else ""
+            print(f"No contracts in status={status}{scope_str}")
+            return
+        for i, r in enumerate(rows):
+            if i:
+                print()
+            _print_contract_row(r)
+        return
+
+    if action == "show":
+        if not args.id:
+            print("contracts show: --id is required", file=sys.stderr)
+            sys.exit(1)
+        row = db.get_contract(args.id)
+        if row is None:
+            print(f"contracts show: {args.id} not found", file=sys.stderr)
+            sys.exit(1)
+        _print_contract_row(row)
+        return
+
+    if action == "approve":
+        if not args.id:
+            print("contracts approve: --id is required", file=sys.stderr)
+            sys.exit(1)
+        if not db.approve_contract(args.id):
+            print(f"contracts approve: {args.id} not found or not Pending", file=sys.stderr)
+            sys.exit(1)
+        print(f"approved {args.id}")
+        return
+
+    if action == "reject":
+        if not args.id:
+            print("contracts reject: --id is required", file=sys.stderr)
+            sys.exit(1)
+        if not db.reject_contract(args.id):
+            print(f"contracts reject: {args.id} not found or not Pending", file=sys.stderr)
+            sys.exit(1)
+        print(f"rejected {args.id}")
+        return
+
+    if action == "retract":
+        if not args.id or not args.reason:
+            print("contracts retract: --id and --reason are required", file=sys.stderr)
+            sys.exit(1)
+        try:
+            ok = db.retract_contract(args.id, reason=args.reason)
+        except ValueError as e:
+            print(f"contracts retract: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not ok:
+            print(f"contracts retract: {args.id} not found or not Active", file=sys.stderr)
+            sys.exit(1)
+        print(f"retracted {args.id}")
+        return
+
+    if action == "supersede":
+        if not args.id or not args.body:
+            print("contracts supersede: --id and --body are required", file=sys.stderr)
+            sys.exit(1)
+        new_id = db.supersede_contract(
+            args.id,
+            new_body=args.body,
+            byline_session_id=args.byline_session_id,
+            byline_model=args.byline_model,
+        )
+        if new_id is None:
+            row = db.get_contract(args.id)
+            if row is None:
+                print(f"contracts supersede: {args.id} not found", file=sys.stderr)
+            else:
+                print("contracts supersede: target not Active or new body is a duplicate", file=sys.stderr)
+            sys.exit(1)
+        print(f"superseded {args.id} -> {new_id}")
+        return
+
+    print(f"contracts: unknown action {action!r}", file=sys.stderr)
+    sys.exit(1)
 
 
 def main():
@@ -342,12 +394,18 @@ def main():
         "summary_id",
         nargs="?",
         default=None,
-        help="Summary ID (e.g. sum_abc123) — omit when using --file",
+        help="Summary ID (e.g. sum_abc123); omit when using --file or --span-id",
     )
     p_expand.add_argument(
         "--file",
         default=None,
-        help="File path to expand — lists recent summaries that mention it",
+        help="File path to expand; lists recent summaries that mention it",
+    )
+    p_expand.add_argument(
+        "--span-id",
+        dest="span_id",
+        default=None,
+        help="Message ID; walks the parent_message_id chain (v1.2 span mode)",
     )
     p_expand.add_argument(
         "--limit", type=int, default=3, help="Max summaries when using --file"
@@ -356,9 +414,7 @@ def main():
     p_expand.set_defaults(func=cmd_expand)
 
     # context
-    p_ctx = sub.add_parser("context", help="Surface relevant context")
-    p_ctx.add_argument("query", nargs="?", default="", help="Query")
-    p_ctx.add_argument("--limit", type=int, default=5)
+    p_ctx = sub.add_parser("context", help="Print the v1.2 SessionStart bundle")
     p_ctx.set_defaults(func=cmd_context)
 
     # sessions
@@ -389,6 +445,29 @@ def main():
     p_dream.add_argument("--project", help="Scope to specific working directory")
     p_dream.add_argument("--global", action="store_true", dest="global_scope", help="Run global cross-project dream")
     p_dream.set_defaults(func=cmd_dream)
+
+    # contracts (v1.2 U7)
+    p_contracts = sub.add_parser(
+        "contracts",
+        help="Behavior-contract registry: list / show / approve / reject / retract / supersede",
+    )
+    p_contracts.add_argument(
+        "action",
+        choices=["list", "show", "approve", "reject", "retract", "supersede"],
+        help="What to do",
+    )
+    p_contracts.add_argument("--id", help="Contract id (con_...)")
+    p_contracts.add_argument(
+        "--status",
+        choices=["Pending", "Active", "Retracted", "Rejected"],
+        help="Filter for list (default: Pending)",
+    )
+    p_contracts.add_argument("--scope", help="Filter for list")
+    p_contracts.add_argument("--reason", help="Required for retract")
+    p_contracts.add_argument("--body", help="Required for supersede")
+    p_contracts.add_argument("--byline-session-id", dest="byline_session_id")
+    p_contracts.add_argument("--byline-model", dest="byline_model")
+    p_contracts.set_defaults(func=cmd_contracts)
 
     args = parser.parse_args()
     if not args.command:

@@ -37,17 +37,39 @@ CONFIG_PATH = VAULT_DIR / "config.json"
 _conn: Optional[sqlite3.Connection] = None
 
 
+def _chmod_vault_files() -> None:
+    """Best-effort chmod 0600 on vault.db and its WAL/SHM sidecars."""
+    for path in (VAULT_DB, VAULT_DB.with_name("vault.db-wal"), VAULT_DB.with_name("vault.db-shm")):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
 def get_db() -> sqlite3.Connection:
     """Return a module-level connection, creating vault.db if needed."""
     global _conn
     if _conn is not None:
         return _conn
 
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Tighten permissions on existing dir too. mkdir(mode=) only applies to new dirs.
+    try:
+        os.chmod(VAULT_DIR, 0o700)
+    except OSError:
+        pass  # Best-effort on shared or readonly mounts.
     _conn = sqlite3.connect(str(VAULT_DB), timeout=10)
     _conn.row_factory = sqlite3.Row
+    # Lock down vault.db. The vault contains every captured turn (credentials,
+    # file paths, transcripts), so default 0644 is unsafe on shared machines.
+    # Idempotent on every connect: cheap, defensive against umask changes.
+    _chmod_vault_files()
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA foreign_keys=ON")
+    # WAL mode creates -wal and -shm sidecars. Without locking these down
+    # too, the same secrets that motivate vault.db chmod 0600 leak via the
+    # write-ahead log (which contains every uncheckpointed page).
+    _chmod_vault_files()
     _conn.executescript(SCHEMA_SQL)
     _conn.executescript(FTS_SQL)
     _conn.executescript(FTS_TRIGGERS_SQL)
@@ -71,6 +93,24 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("ALTER TABLE summaries ADD COLUMN kind TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
+    # Migration (v1.2 U1): OTel span columns on messages. NULL-able for backfill
+    # compatibility; pre-migration rows have no causal data and that is accepted.
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN parent_message_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN span_kind TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN attributes TEXT")
+    except sqlite3.OperationalError:
+        pass
     _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_file_path "
         "ON messages(file_path) WHERE file_path IS NOT NULL"
@@ -83,6 +123,62 @@ def get_db() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_summaries_depth_consolidated "
         "ON summaries(depth, consolidated)"
     )
+    # Indexes for span queries (U2 helpers + lcc_expand span-id lookups)
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_span_kind "
+        "ON messages(span_kind) WHERE span_kind IS NOT NULL"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_parent_id "
+        "ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_tool_call_id "
+        "ON messages(tool_call_id) WHERE tool_call_id IS NOT NULL"
+    )
+    # Contracts table (v1.2 U5): typed retractable rules that ride inside
+    # the SessionStart bundle. Append-only with supersedes_id chain.
+    # IF NOT EXISTS is self-idempotent; no try/except needed.
+    _conn.execute(
+        """CREATE TABLE IF NOT EXISTS contracts (
+            id                 TEXT PRIMARY KEY,
+            kind               TEXT NOT NULL,
+            body               TEXT NOT NULL,
+            byline_session_id  TEXT,
+            byline_model       TEXT,
+            created_at         INTEGER NOT NULL,
+            status             TEXT NOT NULL DEFAULT 'Pending',
+            supersedes_id      TEXT,
+            scope              TEXT DEFAULT 'project',
+            body_hash          TEXT
+        )"""
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_status "
+        "ON contracts(status)"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_supersedes "
+        "ON contracts(supersedes_id) WHERE supersedes_id IS NOT NULL"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_body_hash "
+        "ON contracts(body_hash) WHERE body_hash IS NOT NULL"
+    )
+    # Migration (v1.2 U6): conflicts_with column on contracts. NULL means
+    # no conflict; non-NULL holds the id of an existing Active contract
+    # whose body inverts this Pending one (heuristic).
+    try:
+        _conn.execute("ALTER TABLE contracts ADD COLUMN conflicts_with TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # Migration (v1.2 U6): mode column on dream_log. Records whether the
+    # contract / decision extractor ran via LLM, regex fallback, or failed.
+    # Read by lcc_status to surface degraded-mode operation to the user.
+    try:
+        _conn.execute("ALTER TABLE dream_log ADD COLUMN mode TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Migration: message_embeddings table for semantic search (IF NOT EXISTS
     # is self-idempotent — no try/except needed, and a bare except would mask
     # unrelated OperationalError from index creation).
@@ -160,6 +256,22 @@ from .summaries import (
 )
 from .search import escape_fts5_query, search_messages, search_summaries, search_all
 from .dream_log import project_hash, get_last_dream, store_dream_log
+from .spans import (
+    get_span,
+    get_span_chain,
+    get_children_spans,
+    cap_attributes_json,
+)
+from .contracts import (
+    gen_contract_id,
+    store_contract_candidate,
+    get_contract,
+    list_contracts,
+    approve_contract,
+    reject_contract,
+    retract_contract,
+    supersede_contract,
+)
 from .embeddings import (
     upsert_embedding,
     get_unembed_messages,
@@ -224,6 +336,20 @@ __all__ = [
     "project_hash",
     "get_last_dream",
     "store_dream_log",
+    # Spans (v1.2 U2): OTel-shaped messages graph
+    "get_span",
+    "get_span_chain",
+    "get_children_spans",
+    "cap_attributes_json",
+    # Contracts (v1.2 U5): typed retractable rules
+    "gen_contract_id",
+    "store_contract_candidate",
+    "get_contract",
+    "list_contracts",
+    "approve_contract",
+    "reject_contract",
+    "retract_contract",
+    "supersede_contract",
     # Embeddings
     "upsert_embedding",
     "get_unembed_messages",
