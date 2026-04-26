@@ -109,7 +109,7 @@ def collect_status_dict(working_dir: Optional[str] = None) -> dict:
         ).fetchone()[0]
         try:
             import file_context as fc
-            fingerprint_cache_count = len(fc._load_cache())
+            fingerprint_cache_count = fc.cache_size()
         except Exception:
             fingerprint_cache_count = 0
 

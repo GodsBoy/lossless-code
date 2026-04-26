@@ -95,6 +95,29 @@ class TestExtractiveFallback(unittest.TestCase):
         out = ce._extractive_contracts_fallback(msgs)
         self.assertEqual(out, [])
 
+    def test_contracts_fallback_preserves_body_casing(self):
+        """Bodies must keep their original casing to match the LLM
+        extractor output; lowercasing belongs in dedup keys only."""
+        msgs = [
+            {"role": "user", "content": "Never use AWS Lambda for cron jobs"},
+        ]
+        out = ce._extractive_contracts_fallback(msgs)
+        self.assertEqual(len(out), 1)
+        # Display body keeps acronyms and proper nouns intact.
+        self.assertIn("AWS Lambda", out[0]["body"])
+        self.assertNotIn("aws lambda", out[0]["body"])
+
+    def test_contracts_fallback_dedups_case_insensitively(self):
+        """Two messages that differ only in casing should produce one
+        candidate (the first one wins, casing preserved)."""
+        msgs = [
+            {"role": "user", "content": "Never use AWS Lambda for cron jobs"},
+            {"role": "user", "content": "never use aws lambda for cron jobs"},
+        ]
+        out = ce._extractive_contracts_fallback(msgs)
+        self.assertEqual(len(out), 1)
+        self.assertIn("AWS Lambda", out[0]["body"])
+
     def test_decisions_fallback_finds_we_decided(self):
         msgs = [
             {"role": "user", "content": "We decided to ship the bundle in v1.2.0", "session_id": "s1"},
@@ -314,10 +337,34 @@ class TestCombineModes(unittest.TestCase):
     def test_same_mode_returns_same(self):
         self.assertEqual(ce.combine_modes("llm", "llm"), "llm")
         self.assertEqual(ce.combine_modes("failed", "failed"), "failed")
+        self.assertEqual(ce.combine_modes("noop", "noop"), "noop")
 
     def test_different_modes_return_mixed(self):
         self.assertEqual(ce.combine_modes("llm", "extractive"), "mixed")
         self.assertEqual(ce.combine_modes("llm", "failed"), "mixed")
+
+    def test_noop_is_transparent_when_other_extractor_ran(self):
+        """One extractor no-op + the other ran should report what ran,
+        not 'mixed'. 'mixed' is reserved for genuinely divergent
+        extraction outcomes that the operator should investigate."""
+        self.assertEqual(ce.combine_modes("noop", "llm"), "llm")
+        self.assertEqual(ce.combine_modes("llm", "noop"), "llm")
+        self.assertEqual(ce.combine_modes("noop", "extractive"), "extractive")
+        self.assertEqual(ce.combine_modes("failed", "noop"), "failed")
+
+
+class TestExtractorEmptyInputReturnsNoop(unittest.TestCase):
+    def test_contracts_empty_messages_returns_noop(self):
+        """Empty input window means nothing was attempted - mode='noop',
+        not 'llm'. Prior shape misrepresented the cycle as having run."""
+        out, mode = ce.extract_contract_candidates([], [], {})
+        self.assertEqual(out, [])
+        self.assertEqual(mode, "noop")
+
+    def test_decisions_empty_messages_returns_noop(self):
+        out, mode = ce.extract_decision_candidates([], [], {})
+        self.assertEqual(out, [])
+        self.assertEqual(mode, "noop")
 
 
 if __name__ == "__main__":

@@ -48,9 +48,12 @@ def get_span_chain(message_id: int, max_hops: int = 32) -> list[dict]:
     is index 1, and so on). Always returns at least one row for an existing
     message_id; an empty list signals the message_id was not found.
 
-    The recursive CTE caps at ``max_hops`` to prevent runaway walks if a
-    cycle ever lands in the table (FK semantics forbid cycles, but a manual
-    SQL edit could create one). Default 32 hops is well above any realistic
+    Two termination guards: ``max_hops`` caps the recursion depth, and a
+    path-based visited-set check breaks cycles before they reach the cap
+    (FK semantics forbid cycles, but a manual SQL edit could create one,
+    or a future schema change might allow them). UNION ALL is used because
+    UNION dedupes by row identity which is meaningless for cycle detection
+    over (id, hop) pairs. Default 32 hops is well above any realistic
     conversation depth.
 
     Mirrors the recursive-CTE pattern in summaries.get_summaries_for_file
@@ -61,20 +64,21 @@ def get_span_chain(message_id: int, max_hops: int = 32) -> list[dict]:
     db = get_db()
     rows = db.execute(
         """
-        WITH RECURSIVE ancestors(id, hop) AS (
-            SELECT id, 0
+        WITH RECURSIVE ancestors(id, hop, path) AS (
+            SELECT id, 0, ',' || id || ','
             FROM messages
             WHERE id = ?
 
-            UNION
+            UNION ALL
 
-            SELECT m.id, a.hop + 1
+            SELECT m.id, a.hop + 1, a.path || m.id || ','
             FROM ancestors a
             JOIN messages m ON m.id = (
                 SELECT parent_message_id FROM messages WHERE id = a.id
             )
             WHERE a.hop < ?
               AND m.id IS NOT NULL
+              AND instr(a.path, ',' || m.id || ',') = 0
         )
         SELECT m.*, a.hop
         FROM ancestors a

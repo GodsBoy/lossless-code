@@ -218,6 +218,16 @@ def _cold_lookup(file_path: str, limit: int) -> list[dict]:
         conn.close()
 
 
+def cache_size() -> int:
+    """Public surface for callers (e.g., lcc_status) that want the cached
+    fingerprint count without reaching into the internal cache loader.
+    Returns 0 on any error so status callers never raise."""
+    try:
+        return len(_load_cache())
+    except Exception:  # noqa: BLE001 - status surface must not raise
+        return 0
+
+
 def get_file_fingerprint(file_path: str, limit: int = DEFAULT_LIMIT) -> str:
     """
     Return the formatted fingerprint for ``file_path`` or an empty string.
