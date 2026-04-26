@@ -214,9 +214,9 @@ def get_relevant_summaries(query: str = "", limit: int = 5) -> list[dict]:
 # rather than user-configurable until v1.2.1 telemetry tells us how to tune.
 
 _BUNDLE_HEADER = (
-    "# Lossless Context (auto-injected, ≤1000 tokens)\n"
-    "# Each line below has an Expand instruction; call lcc_grep with help "
-    "for protocol details."
+    "# Lossless Context (auto-injected, <=1000 tokens)\n"
+    "# Each line below carries its own Expand instruction. Invoke the named "
+    "MCP tool with the JSON arguments shown to fetch full content."
 )
 
 _RECOVERY_LINE = (
