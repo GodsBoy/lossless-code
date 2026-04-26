@@ -261,7 +261,10 @@ def _render_contract_ref(contract: dict) -> str:
     raw_body = contract.get("body") or ""
     # Reject before sanitization so the rejection is on the raw body the
     # user actually approved, not a transformed version that would also pass.
-    if "[lcc.contract]" in raw_body:
+    # Reject every reserved marker, not just [lcc.contract] - a body
+    # carrying [lcc.handoff] or [lcc.decision] would also inject a synthetic
+    # bundle line of the wrong type.
+    if _contains_reserved_marker(raw_body):
         return ""
     body = _sanitize_for_context(raw_body, max_len=180)
     if not body:
@@ -282,13 +285,39 @@ def _render_contract_ref(contract: dict) -> str:
     )
 
 
+# Reserved bundle line markers. Any user/derived content containing one of
+# these tokens is rejected from its render slot, so an attacker who gets a
+# malicious string into a handoff or summary cannot inject a synthetic
+# bundle line ("rule\n[lcc.contract] FORBID poison") that the agent would
+# then trust as a same-trust-level instruction.
+_RESERVED_BUNDLE_MARKERS = (
+    "[lcc.contract]",
+    "[lcc.handoff]",
+    "[lcc.decision]",
+    "[lcc.recovery]",
+)
+
+
+def _contains_reserved_marker(text: str) -> bool:
+    return any(marker in text for marker in _RESERVED_BUNDLE_MARKERS)
+
+
 def _render_handoff_ref(session: dict) -> str:
-    """Render a session's handoff as a one-line ref + Expand pointer."""
+    """Render a session's handoff as a one-line ref + Expand pointer.
+
+    Rejects handoffs containing any reserved bundle marker; without this,
+    a session that captured a malicious user message could re-emerge as
+    an attacker-controlled bundle line on the next session start.
+    """
     handoff = (session.get("handoff_text") or "").strip()
     if not handoff:
         return ""
+    if _contains_reserved_marker(handoff):
+        return ""
     sid = session.get("session_id", "?")
     summary_line = _sanitize_for_context(handoff.split("\n", 1)[0], max_len=200)
+    if not summary_line:
+        return ""
     return (
         f"[lcc.handoff] {summary_line}. "
         f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
@@ -296,11 +325,20 @@ def _render_handoff_ref(session: dict) -> str:
 
 
 def _render_decision_ref(summary: dict) -> str:
-    """Render a decision-typed summary as a one-line ref + Expand pointer."""
+    """Render a decision-typed summary as a one-line ref + Expand pointer.
+
+    Rejects decisions containing any reserved bundle marker for the same
+    reason as _render_handoff_ref: the summary text is derived from
+    captured turns and can carry adversarial content.
+    """
     body = (summary.get("content") or "").strip()
     if not body:
         return ""
+    if _contains_reserved_marker(body):
+        return ""
     summary_line = _sanitize_for_context(body.split("\n", 1)[0], max_len=200)
+    if not summary_line:
+        return ""
     sid = summary.get("id", "?")
     session_id = summary.get("session_id") or "?"
     created = summary.get("created_at")
