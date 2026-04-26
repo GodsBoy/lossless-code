@@ -153,6 +153,42 @@ class TestSpanHelpers(unittest.TestCase):
         chain = db.get_span_chain(b, max_hops=4)
         self.assertLessEqual(len(chain), 5)
 
+    def test_chain_path_cycle_guard_breaks_before_max_hops(self):
+        """Path-based cycle detection should terminate well before
+        max_hops on a 2-node cycle. Without the path guard, UNION ALL
+        would walk to the hop cap; the visited-set check should stop
+        the walk after each node is visited once."""
+        db.ensure_session("cycle-tight", "/tmp")
+        a = self._store_with_span("cycle-tight", "user", "a")
+        b = self._store_with_span("cycle-tight", "user", "b", parent_id=a)
+        conn = db.get_db()
+        conn.execute(
+            "UPDATE messages SET parent_message_id = ? WHERE id = ?", (b, a)
+        )
+        conn.commit()
+        # Even at a generous max_hops, the cycle guard should keep the
+        # chain to exactly the two distinct nodes (a, b).
+        chain = db.get_span_chain(b, max_hops=64)
+        self.assertEqual(len(chain), 2)
+        self.assertEqual({row["id"] for row in chain}, {a, b})
+
+    def test_chain_three_node_cycle_terminates(self):
+        """3-node cycle (a -> b -> c -> a) should also terminate via the
+        path guard, not via the hop cap."""
+        db.ensure_session("cycle-three", "/tmp")
+        a = self._store_with_span("cycle-three", "user", "a")
+        b = self._store_with_span("cycle-three", "user", "b", parent_id=a)
+        c = self._store_with_span("cycle-three", "user", "c", parent_id=b)
+        conn = db.get_db()
+        # Close the cycle: a's parent becomes c.
+        conn.execute(
+            "UPDATE messages SET parent_message_id = ? WHERE id = ?", (c, a)
+        )
+        conn.commit()
+        chain = db.get_span_chain(c, max_hops=64)
+        self.assertEqual(len(chain), 3)
+        self.assertEqual({row["id"] for row in chain}, {a, b, c})
+
     # --- get_children_spans ---
 
     def test_children_returns_direct_descendants_only(self):
