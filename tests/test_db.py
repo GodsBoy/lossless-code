@@ -394,6 +394,26 @@ class TestDatabase(unittest.TestCase):
             f"vault.db mode {oct(mode)} grants group/other access. Security gate violated.",
         )
 
+    def test_vault_wal_shm_permissions_locked_down(self):
+        """WAL and SHM sidecars must inherit vault.db's 0o600. Without this
+        the same secrets that motivate vault.db chmod leak via the
+        write-ahead log (which contains every uncheckpointed page).
+        """
+        import stat
+        # Force a write so WAL/SHM exist on disk.
+        conn = db.get_db()
+        conn.execute("CREATE TABLE IF NOT EXISTS _wal_probe (x)")
+        conn.commit()
+        for sidecar in ("vault.db-wal", "vault.db-shm"):
+            path = db.VAULT_DB.with_name(sidecar)
+            if not path.exists():
+                continue
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            self.assertFalse(
+                bool(mode & 0o077),
+                f"{sidecar} mode {oct(mode)} grants group/other access. Security gate violated.",
+            )
+
     # --- Session filtering (lossless-claw parity) ---
 
     def test_stateless_column_exists(self):

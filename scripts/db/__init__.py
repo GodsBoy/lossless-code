@@ -37,6 +37,15 @@ CONFIG_PATH = VAULT_DIR / "config.json"
 _conn: Optional[sqlite3.Connection] = None
 
 
+def _chmod_vault_files() -> None:
+    """Best-effort chmod 0600 on vault.db and its WAL/SHM sidecars."""
+    for path in (VAULT_DB, VAULT_DB.with_name("vault.db-wal"), VAULT_DB.with_name("vault.db-shm")):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
 def get_db() -> sqlite3.Connection:
     """Return a module-level connection, creating vault.db if needed."""
     global _conn
@@ -54,12 +63,13 @@ def get_db() -> sqlite3.Connection:
     # Lock down vault.db. The vault contains every captured turn (credentials,
     # file paths, transcripts), so default 0644 is unsafe on shared machines.
     # Idempotent on every connect: cheap, defensive against umask changes.
-    try:
-        os.chmod(VAULT_DB, 0o600)
-    except OSError:
-        pass  # File may not exist yet on some platforms; sqlite3.connect creates it.
+    _chmod_vault_files()
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA foreign_keys=ON")
+    # WAL mode creates -wal and -shm sidecars. Without locking these down
+    # too, the same secrets that motivate vault.db chmod 0600 leak via the
+    # write-ahead log (which contains every uncheckpointed page).
+    _chmod_vault_files()
     _conn.executescript(SCHEMA_SQL)
     _conn.executescript(FTS_SQL)
     _conn.executescript(FTS_TRIGGERS_SQL)
