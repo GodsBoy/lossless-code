@@ -190,7 +190,7 @@ Fewer dependencies means less to maintain, fewer failure modes, and lower resour
 /plugin install lossless-code
 ```
 
-Hooks, MCP server, and skill are activated automatically. No manual setup needed.
+Hooks, MCP server, skill, and `lcc_*` shell commands are activated automatically. No manual setup needed.
 
 ### Option B: Standalone Install
 
