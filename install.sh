@@ -46,6 +46,7 @@ cp "$SCRIPT_DIR/scripts/check_summariser_pollution.py" "$LOSSLESS_HOME/scripts/"
 # v1.2 additions: contracts extractor + shared status helper
 cp "$SCRIPT_DIR/scripts/contracts.py"         "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/lcc_core.py"          "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/ensure_cli_shims.py" "$LOSSLESS_HOME/scripts/"
 echo "  [ok] Copied Python scripts to $LOSSLESS_HOME/scripts/"
 
 # ── 2b. Copy MCP server ──────────────────────────────────────────────────

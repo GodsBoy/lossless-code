@@ -1,4 +1,18 @@
 #!/bin/bash
 # lcc_dream — run dream cycle: extract patterns and consolidate DAG
-SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
+if [ -n "${LOSSLESS_HOME:-}" ]; then
+    SCRIPTS_DIR="$LOSSLESS_HOME/scripts"
+else
+    SOURCE="${BASH_SOURCE[0]:-$0}"
+    if [ "${SOURCE#*/}" = "$SOURCE" ]; then
+        FOUND="$(command -v "$SOURCE" 2>/dev/null || true)"
+        [ -n "$FOUND" ] && SOURCE="$FOUND"
+    fi
+    if command -v readlink >/dev/null 2>&1; then
+        RESOLVED="$(readlink -f "$SOURCE" 2>/dev/null || true)"
+        [ -n "$RESOLVED" ] && SOURCE="$RESOLVED"
+    fi
+    SCRIPTS_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    export LOSSLESS_HOME="$(cd "$SCRIPTS_DIR/.." && pwd)"
+fi
 exec python3 "$SCRIPTS_DIR/lcc.py" dream "$@"

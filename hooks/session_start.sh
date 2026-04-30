@@ -5,6 +5,12 @@ set -euo pipefail
 SCRIPTS_DIR="${LOSSLESS_HOME:-$HOME/.lossless-code}/scripts"
 INPUT=$(cat)
 
+# Plugin installs do not run install.sh, so create user PATH shims from the
+# plugin cache before skills try bare lcc_* Bash commands.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$SCRIPTS_DIR/ensure_cli_shims.py" ]; then
+    python3 "$SCRIPTS_DIR/ensure_cli_shims.py" --quiet 2>/dev/null || true
+fi
+
 SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
 CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")
 
