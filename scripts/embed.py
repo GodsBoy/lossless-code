@@ -196,11 +196,8 @@ def blob_to_vec(raw: bytes) -> list[float]:
 # Indexing pipeline
 # ---------------------------------------------------------------------------
 
-def embed_messages_batch(db_conn, cfg: dict, session_id: Optional[str] = None) -> int:
+def embed_messages_batch(cfg: dict, session_id: Optional[str] = None) -> int:
     """Embed un-indexed messages and store results. Returns count of newly embedded.
-
-    db_conn: an open sqlite3 connection (passed to avoid circular import issues
-             when called from hook_embed.py which opens its own connection).
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import db as _db

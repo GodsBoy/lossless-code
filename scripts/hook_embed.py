@@ -28,8 +28,7 @@ def main():
     if session_id and db.get_session_stateless(session_id):
         return
 
-    conn = db.get_db()
-    embed.embed_messages_batch(conn, cfg, session_id=session_id)
+    embed.embed_messages_batch(cfg, session_id=session_id)
 
 
 if __name__ == "__main__":

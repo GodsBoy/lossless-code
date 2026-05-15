@@ -403,7 +403,7 @@ class TestBatchIndexing(unittest.TestCase):
 
         with patch("embed.detect_provider", return_value="fastembed"), \
              patch("embed.embed_texts", return_value=[fake_vec] * 5):
-            stored = embed.embed_messages_batch(db.get_db(), cfg, session_id=self.session_id)
+            stored = embed.embed_messages_batch(cfg, session_id=self.session_id)
 
         self.assertGreaterEqual(stored, 1)
         count = db.count_embeddings(model)
@@ -412,7 +412,7 @@ class TestBatchIndexing(unittest.TestCase):
     def test_embed_messages_batch_skips_when_disabled(self):
         """embed_messages_batch returns 0 when no provider available."""
         cfg = _cfg(embeddingEnabled=False)
-        stored = embed.embed_messages_batch(db.get_db(), cfg)
+        stored = embed.embed_messages_batch(cfg)
         self.assertEqual(stored, 0)
 
     def test_embed_messages_batch_skips_none_vectors(self):
@@ -430,7 +430,7 @@ class TestBatchIndexing(unittest.TestCase):
 
         with patch("embed.detect_provider", return_value="fastembed"), \
              patch("embed.embed_texts", return_value=fake_vecs):
-            stored = embed.embed_messages_batch(db.get_db(), cfg, session_id=session_id)
+            stored = embed.embed_messages_batch(cfg, session_id=session_id)
 
         # At most 2 stored (the None one was skipped)
         self.assertLessEqual(stored, 2)
@@ -447,7 +447,7 @@ class TestBatchIndexing(unittest.TestCase):
 
         with patch("embed.detect_provider", return_value="fastembed"), \
              patch("embed.embed_texts", return_value=[fake_vec]):
-            embed.embed_messages_batch(db.get_db(), cfg, session_id=session_id)
+            embed.embed_messages_batch(cfg, session_id=session_id)
 
         saved_cfg = db.load_config()
         self.assertEqual(saved_cfg.get("lastEmbeddingModel"), model)

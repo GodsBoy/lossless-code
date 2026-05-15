@@ -1,12 +1,12 @@
 ---
-status: pending
+status: complete
 priority: p1
 issue_id: "001"
 tags: [code-review, architecture, quality, python]
 dependencies: []
 ---
 
-# Dead `db_conn` Parameter in `embed_messages_batch`
+# Removed Dead `db_conn` Parameter in `embed_messages_batch`
 
 ## Problem Statement
 
@@ -60,14 +60,15 @@ _Option A — Remove the parameter. It was never used and the singleton connecti
 
 ## Acceptance Criteria
 
-- [ ] `embed_messages_batch` signature has no `db_conn` / `conn` parameter
-- [ ] `hook_embed.py` does not open a connection before calling `embed_messages_batch`
-- [ ] All test calls updated to match new signature
+- [x] `embed_messages_batch` signature has no `db_conn` / `conn` parameter
+- [x] `hook_embed.py` does not open a connection before calling `embed_messages_batch`
+- [x] All test calls updated to match new signature
 - [ ] 148 tests still pass
 
 ## Work Log
 
 - 2026-03-29 — Identified by 3 independent review agents (Python, Architecture, Simplicity)
+- 2026-05-15: Removed the unused parameter and updated hook/test callers.
 
 ## Resources
 
