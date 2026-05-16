@@ -2,7 +2,7 @@
 
 # 🧠 lossless-code
 
-**DAG-based Lossless Context Management for Claude Code.**
+**DAG-based Lossless Context Management for Claude Code and Codex.**
 
 *Every message preserved forever. Summaries cascade, never delete. Full recall across sessions. Works with any LLM.*
 
@@ -15,6 +15,7 @@
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks-D97706?logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-SessionStart-111827)](https://developers.openai.com/codex/hooks)
 [![MCP](https://img.shields.io/badge/MCP-server-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/GodsBoy/lossless-code/pulls)
 ![Provider Agnostic](https://img.shields.io/badge/LLM-any_provider-blueviolet)
@@ -65,6 +66,7 @@ lossless-code uses **DAG-based lossless preservation**, the same approach pionee
 - **Summaries form a directed acyclic graph.** Messages cascade to depth-0 summaries, which roll up to depth-1, depth-2, and beyond.
 - **Full drill-down.** `lcc_expand` traces any summary back to the exact messages that created it.
 - **Automatic.** Claude Code hooks capture every turn and trigger summarisation transparently. Zero manual effort.
+- **Codex start continuity.** Codex can use MCP recall, `SessionStart` bundle injection, doctor checks, launcher fallback, and project opt-in latest-tail task state.
 - **Cross-session recall.** Start a new session and your full project history is immediately searchable.
 - **Lossless Dream.** Extracts recurring patterns (corrections, preferences, conventions) from vault history and injects them into future sessions — like Auto-Dream but without forgetting.
 
@@ -928,6 +930,8 @@ lossless-code currently supports **Claude Code** natively. The hook and plugin e
 | **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟢 Start continuity | `SessionStart` bundle, doctor checks, MCP setup, launcher fallback, and project opt-in latest-tail task state. Prompt capture and full transcript import remain planned |
 | **Gemini CLI** | BeforeTool, AfterTool, lifecycle | ✅ | 🟡 Planned | Different event names; needs thin adapter layer |
 | **OpenCode** | session.compacting + plugin hooks | ✅ | 🔵 Researching | Plugin architecture differs; compacting hook maps to PreCompact |
+
+Current Codex support focuses on safe start-of-thread continuity: MCP pull-on-demand recall, a bounded `SessionStart` bundle, readiness checks, launcher fallback, and opt-in latest-tail task state. Roadmap items from the compatibility planning remain prompt capture, stop/transcript import, richer project review tools, and adapter work for other hook-capable CLIs.
 
 > **MCP works everywhere today.** Any agent that supports MCP servers can already use `lcc_grep`, `lcc_expand`, `lcc_context`, `lcc_sessions`, `lcc_handoff`, and `lcc_status` for manual recall. The roadmap above tracks *automatic* capture via hooks.
 
