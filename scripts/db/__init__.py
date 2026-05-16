@@ -83,6 +83,15 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("ALTER TABLE sessions ADD COLUMN stateless INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass  # Column already exists
+    # Migration: add agent_source columns for cross-agent continuity labels
+    try:
+        _conn.execute("ALTER TABLE sessions ADD COLUMN agent_source TEXT DEFAULT 'claude-code'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        _conn.execute("ALTER TABLE messages ADD COLUMN agent_source TEXT DEFAULT 'claude-code'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     # Migration: add file_path column to messages (fingerprint file context)
     try:
         _conn.execute("ALTER TABLE messages ADD COLUMN file_path TEXT")

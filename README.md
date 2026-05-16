@@ -32,6 +32,7 @@
 The v1.2 release delivers three composing layers on top of the v1.1 vault and dream cycle:
 
 - **Compaction-aware reference bundle.** SessionStart now emits a token-budgeted reference bundle (default 1000 tokens, configurable via `bundleTokenBudget`) instead of a 2-5K token text dump. The agent pulls depth on demand via `lcc_expand`, `lcc_grep`, and `lcc_context`. Recovery-protocol line ships first so the agent knows the protocol before any content arrives.
+- **Codex start continuity.** `lcc codex doctor`, Codex `SessionStart` hook config, and `lcc codex start` bring the same bounded bundle to Codex. The bundle leads with current task state, labels partial recall, and keeps MCP expansion as the dependable base.
 - **Behavior contracts.** Typed retractable rules (`prefer` / `forbid` / `verify-before`) the agent commits to follow next session. The dream cycle proposes them as `Pending`; you approve via the TUI Contracts tab (key `5`, then `a` to approve, `r` to reject or retract, `s` to supersede). Append-only retraction trail preserved for audit; supersede atomicity wraps INSERT and UPDATE in `BEGIN IMMEDIATE`.
 - **OpenTelemetry-shaped span substrate.** New `parent_message_id`, `span_kind`, `tool_call_id`, `attributes` columns on the `messages` table. `lcc_expand` accepts `span_id` and walks the parent chain, returning a structured-error JSON shape for `span_not_found` / `expand_too_large` / `vault_corrupt` so agents know how to fall back.
 
@@ -257,6 +258,26 @@ If you need to register the MCP server manually:
 }
 ```
 
+### Codex MCP Registration
+
+Codex can use the same MCP server for pull-on-demand recall. Preview the registration command:
+
+```bash
+lcc codex install-mcp
+```
+
+Run it when you are ready to write Codex MCP config:
+
+```bash
+lcc codex install-mcp --write
+```
+
+Check readiness at any time:
+
+```bash
+lcc codex doctor
+```
+
 ### Architecture
 
 ```
@@ -291,11 +312,27 @@ lcc_expand --file path/to/file.py          # list recent summaries that touched 
 
 ### `lcc_context`
 
-Print the v1.2 SessionStart reference bundle (contracts + handoff line + decisions + file fingerprints) with each line carrying its own Expand instruction. Takes no arguments; the bundle shape is the same content the SessionStart hook injects.
+Print the v1.2 SessionStart reference bundle. The bundle starts with current task state when available, then contracts, handoff, decisions, and file fingerprints, with each line carrying its own Expand instruction. Takes no arguments; the bundle shape is the same content the start hooks inject.
 
 ```bash
 lcc_context
 ```
+
+### `lcc codex`
+
+Codex setup, diagnostics, and launcher helpers.
+
+```bash
+lcc codex doctor                         # check Codex CLI, hooks, MCP, vault, and bundle preview
+lcc codex install-hooks                  # dry-run project hooks.json for SessionStart
+lcc codex install-hooks --write          # write project .codex/hooks.json
+lcc codex install-hooks --scope user     # dry-run ~/.codex/hooks.json
+lcc codex install-mcp                    # print codex mcp add command
+lcc codex start --print-context "task"   # print launcher fallback prompt
+lcc codex start "task"                   # launch Codex with Lossless-Code context
+```
+
+The hook path is preferred once Codex has reviewed and trusted the hook. The launcher is a bridge for environments where hook setup or hook timing is not ready yet.
 
 ### `lcc_sessions`
 
@@ -606,7 +643,9 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
 | Key | Default | Description |
 |-----|---------|-------------|
 | `bundleEnabled` | `true` | v1.2 sole rollback flag. When `false`, SessionStart emits no additionalContext (the dream cycle, MCP tools, contracts queue, and TUI all keep working). Use this to A/B compare against a no-injection baseline or to disable injection on a CI runner. |
-| `bundleTokenBudget` | `1000` | Total token budget for the SessionStart reference bundle. Header + recovery line cost is subtracted first; the remainder is divided across contracts (200), handoff (100), decisions (250), and fingerprints (250) per slot. Lower values drop oldest items first; the recovery line and header are last to lose space. |
+| `bundleTokenBudget` | `1000` | Total token budget for the SessionStart reference bundle. Header + recovery line cost is subtracted first; the remainder is divided across task state, contracts, handoff, decisions, and fingerprints. Lower values drop later slots first; the recovery line and header are last to lose space. |
+| `taskStateEnabled` | `true` | Include the current-task-state slot at the front of the reference bundle. When task state is sparse, the bundle says so explicitly instead of pretending recall is complete. |
+| `taskStateTokenBudget` | `200` | Token budget for the task-state slot. This slot is packed before contracts, handoff, decisions, and fingerprints. |
 | `contractsModel` | `null` | Model used by the dream cycle's Phase 1.5 contract extractor. When `null`, falls back to `dreamModel`. Set this to a smaller model if dream cycles are over budget on contracts/decisions extraction. |
 | `contractsPerCycleLimit` | `5` | Maximum new Pending contracts the dream cycle proposes per run. Hard cap to keep the TUI approval queue tractable; further candidates are deferred to the next cycle. |
 | `decisionsPerCycleLimit` | `10` | Maximum new decision-typed summaries the dream cycle records per run. Decisions ride in the SessionStart bundle's decisions slot once recorded. |
@@ -867,7 +906,7 @@ lossless-code currently supports **Claude Code** natively. The hook and plugin e
 |-------|-------------|-----|--------|-------|
 | **Claude Code** | 20+ lifecycle events | ✅ | ✅ Supported | Full plugin with hooks, MCP, skills |
 | **Copilot CLI** | Claude Code format | ✅ | 🟢 Next | Reads `hooks.json` natively; lowest adaptation effort |
-| **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟡 Planned | Experimental hooks engine (v0.114.0+); MCP works today |
+| **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟢 Start continuity | `SessionStart` bundle, doctor checks, MCP setup, and launcher fallback. Prompt capture and transcript import remain planned |
 | **Gemini CLI** | BeforeTool, AfterTool, lifecycle | ✅ | 🟡 Planned | Different event names; needs thin adapter layer |
 | **OpenCode** | session.compacting + plugin hooks | ✅ | 🔵 Researching | Plugin architecture differs; compacting hook maps to PreCompact |
 

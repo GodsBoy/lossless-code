@@ -20,7 +20,12 @@ def get_session_stateless(session_id: str) -> bool:
     return bool(row and row[0])
 
 
-def ensure_session(session_id: str, working_dir: str = "", stateless: bool = False) -> None:
+def ensure_session(
+    session_id: str,
+    working_dir: str = "",
+    stateless: bool = False,
+    agent_source: str = "claude-code",
+) -> None:
     """Create session row if it doesn't exist; update last_active.
 
     stateless=True marks the session as read-only for summarization purposes —
@@ -30,10 +35,13 @@ def ensure_session(session_id: str, working_dir: str = "", stateless: bool = Fal
     db = get_db()
     now = int(time.time())
     db.execute(
-        """INSERT INTO sessions (session_id, working_dir, started_at, last_active, stateless)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(session_id) DO UPDATE SET last_active = ?""",
-        (session_id, working_dir, now, now, int(stateless), now),
+        """INSERT INTO sessions
+           (session_id, working_dir, started_at, last_active, stateless, agent_source)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             last_active = ?,
+             agent_source = COALESCE(sessions.agent_source, excluded.agent_source)""",
+        (session_id, working_dir, now, now, int(stateless), agent_source, now),
     )
     db.commit()
 

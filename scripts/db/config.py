@@ -49,6 +49,8 @@ DEFAULT_CONFIG = {
     # v1.2 compaction-aware bundle (U10 + U6)
     "bundleEnabled": True,
     "bundleTokenBudget": 1000,
+    "taskStateEnabled": True,
+    "taskStateTokenBudget": 200,
     "contractsModel": None,  # Falls back to dreamModel then summaryModel
     "contractsPerCycleLimit": 10,
     "decisionsPerCycleLimit": 15,

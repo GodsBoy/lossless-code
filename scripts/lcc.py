@@ -20,7 +20,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
-import dream as dream_mod
+import codex_support
 import embed as embed_mod
 import inject_context
 import summarise as summarise_mod
@@ -253,6 +253,7 @@ def cmd_reindex(args):
 
 def cmd_dream(args):
     """Run dream cycle — extract patterns and consolidate DAG."""
+    import dream as dream_mod
     scope = "global" if args.global_scope else "project"
     working_dir = args.project or os.getcwd()
     cfg = db.load_config()
@@ -369,6 +370,58 @@ def cmd_contracts(args):
     sys.exit(1)
 
 
+def cmd_codex(args):
+    """Codex setup, diagnostics, and launcher helpers."""
+    action = args.codex_action
+    if action == "doctor":
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=args.codex_cmd,
+            codex_home=args.codex_home,
+            cwd=args.cwd or os.getcwd(),
+        )
+        print(codex_support.format_checks(checks))
+        return
+    if action == "install-hooks":
+        if args.write:
+            path = codex_support.write_hook_config(
+                args.scope,
+                codex_home=args.codex_home,
+                cwd=args.cwd or os.getcwd(),
+            )
+            print(f"Wrote Codex hook config to {path}")
+        else:
+            print(codex_support.print_hook_dry_run(
+                args.scope,
+                codex_home=args.codex_home,
+                cwd=args.cwd or os.getcwd(),
+            ))
+        return
+    if action == "install-mcp":
+        if args.write:
+            import subprocess
+            proc = subprocess.run(
+                codex_support.mcp_add_command(codex_cmd=args.codex_cmd),
+                check=False,
+            )
+            sys.exit(proc.returncode)
+        print(codex_support.print_mcp_dry_run(codex_cmd=args.codex_cmd))
+        return
+    if action == "start":
+        prompt = " ".join(args.prompt or [])
+        if args.print_context:
+            print(codex_support.build_launcher_prompt(prompt, cwd=args.cwd or os.getcwd()))
+            return
+        code = codex_support.launch_codex_with_context(
+            prompt,
+            codex_cmd=args.codex_cmd,
+            cwd=args.cwd or os.getcwd(),
+            extra_args=args.codex_arg or [],
+        )
+        sys.exit(code)
+    print(f"codex: unknown action {action!r}", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="lcc",
@@ -469,9 +522,43 @@ def main():
     p_contracts.add_argument("--byline-model", dest="byline_model")
     p_contracts.set_defaults(func=cmd_contracts)
 
+    # codex
+    p_codex = sub.add_parser("codex", help="Codex setup, diagnostics, and launcher helpers")
+    codex_sub = p_codex.add_subparsers(dest="codex_action", help="Codex actions")
+
+    p_codex_doctor = codex_sub.add_parser("doctor", help="Check Codex readiness")
+    p_codex_doctor.add_argument("--codex-cmd", default="codex")
+    p_codex_doctor.add_argument("--codex-home")
+    p_codex_doctor.add_argument("--cwd")
+    p_codex_doctor.set_defaults(func=cmd_codex)
+
+    p_codex_hooks = codex_sub.add_parser("install-hooks", help="Print or write Codex hook config")
+    p_codex_hooks.add_argument("--scope", choices=["project", "user"], default="project")
+    p_codex_hooks.add_argument("--write", action="store_true")
+    p_codex_hooks.add_argument("--codex-home")
+    p_codex_hooks.add_argument("--cwd")
+    p_codex_hooks.set_defaults(func=cmd_codex)
+
+    p_codex_mcp = codex_sub.add_parser("install-mcp", help="Print or run Codex MCP registration")
+    p_codex_mcp.add_argument("--write", action="store_true")
+    p_codex_mcp.add_argument("--codex-cmd", default="codex")
+    p_codex_mcp.set_defaults(func=cmd_codex)
+
+    p_codex_start = codex_sub.add_parser("start", help="Launch Codex with Lossless-Code context")
+    p_codex_start.add_argument("--print-context", action="store_true")
+    p_codex_start.add_argument("--codex-cmd", default="codex")
+    p_codex_start.add_argument("--cwd")
+    p_codex_start.add_argument("--codex-arg", action="append", default=[])
+    p_codex_start.add_argument("prompt", nargs=argparse.REMAINDER)
+    p_codex_start.set_defaults(func=cmd_codex)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
+        return
+
+    if args.command == "codex" and not args.codex_action:
+        p_codex.print_help()
         return
 
     if args.command == "summarise" and not args.run:

@@ -17,6 +17,7 @@ def store_message(
     span_kind: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     attributes: Optional[dict] = None,
+    agent_source: str = "claude-code",
 ) -> int:
     """Insert a message and return its id.
 
@@ -53,11 +54,13 @@ def store_message(
     cur = db.execute(
         """INSERT INTO messages
            (session_id, turn_id, role, content, tool_name, working_dir, timestamp,
-            file_path, parent_message_id, span_kind, tool_call_id, attributes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            file_path, parent_message_id, span_kind, tool_call_id, attributes,
+            agent_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session_id, turn_id, role, content, tool_name, working_dir, now,
             file_path, parent_message_id, span_kind, tool_call_id, attrs_json,
+            agent_source,
         ),
     )
     db.commit()
