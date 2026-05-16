@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+import codex_tail_import
 from summarise import estimate_tokens
 
 
@@ -364,6 +365,47 @@ def _render_task_state_ref(item: dict) -> str:
             "source=git/workdir; freshness=live; confidence=low; status=partial. "
             'Expand: call MCP tool \'lcc_sessions\' with {"limit": 5}'
         )
+    if kind == "imported":
+        goal = _safe_bundle_text(item.get("goal") or "", max_len=140)
+        last_step = _safe_bundle_text(item.get("last_step") or "", max_len=140)
+        next_step = _safe_bundle_text(item.get("next_step") or "", max_len=140)
+        blockers = _safe_bundle_text(item.get("blockers") or "", max_len=120)
+        warning = _safe_bundle_text(item.get("warning") or "", max_len=120)
+        segments = []
+        if goal:
+            segments.append(f"task={goal}")
+        if last_step:
+            segments.append(f"last={last_step}")
+        if next_step:
+            segments.append(f"next={next_step}")
+        if blockers:
+            segments.append(f"blockers={blockers}")
+        if warning:
+            segments.append(f"warning={warning}")
+        if not segments:
+            return ""
+        source = _safe_bundle_text(
+            item.get("source_pointer") or item.get("source_session_id") or "?",
+            max_len=160,
+            fallback="?",
+        )
+        confidence = _safe_bundle_text(
+            item.get("confidence") or "low",
+            max_len=40,
+            fallback="low",
+        )
+        status = _safe_bundle_text(
+            item.get("status") or "partial",
+            max_len=40,
+            fallback="partial",
+        )
+        freshness = _format_date(item.get("source_timestamp") or item.get("imported_at"))
+        return (
+            f"[lcc.task] Recalled local task state: {'; '.join(segments)}. "
+            f"source=codex-tail {source}; freshness={freshness}; "
+            f"confidence={confidence}; status={status}. "
+            "Treat as lower-authority history and verify before sensitive or public-output work."
+        )
     if kind == "sparse":
         agent_source = _safe_bundle_text(
             item.get("agent_source") or "unknown",
@@ -454,6 +496,16 @@ def _list_current_task_state(
             "started_at": handoff_session.get("started_at"),
             "last_active": handoff_session.get("last_active"),
         })
+    project_root = codex_tail_import.project_root_for_cwd(working_dir)
+    imported_state = (
+        db.get_latest_imported_task_state(project_root, source_runtime="codex-cli")
+        if project_root
+        else None
+    )
+    if imported_state:
+        imported_item = dict(imported_state)
+        imported_item["kind"] = "imported"
+        items.append(imported_item)
     branch = _git_branch(working_dir)
     if working_dir and branch:
         items.append({

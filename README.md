@@ -328,11 +328,16 @@ lcc codex install-hooks                  # dry-run project hooks.json for Sessio
 lcc codex install-hooks --write          # write project .codex/hooks.json
 lcc codex install-hooks --scope user     # dry-run ~/.codex/hooks.json
 lcc codex install-mcp                    # print codex mcp add command
+lcc codex tail-import                    # inspect project opt-in state
+lcc codex tail-import --enable           # allow latest local tail task-state import for this project
+lcc codex tail-import --disable          # remove this project from tail import
 lcc codex start --print-context "task"   # print launcher fallback prompt
 lcc codex start "task"                   # launch Codex with Lossless-Code context
 ```
 
 The hook path is preferred once Codex has reviewed and trusted the hook. The launcher is a bridge for environments where hook setup or hook timing is not ready yet.
+
+Tail import is project opt-in. When enabled for a project, the SessionStart hook reads only the latest matching local session tail, extracts compact task state, and stores that task-state record in `imported_task_state`. It does not store raw turns or full transcripts. `lcc codex doctor` reports whether tail import is disabled, enabled, or enabled but unable to inspect local sessions.
 
 ### `lcc_sessions`
 
@@ -611,6 +616,12 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
   "bundleTokenBudget": 1000,
   "taskStateEnabled": true,
   "taskStateTokenBudget": 200,
+  "codexTailImportProjectRoots": [],
+  "codexTailImportMaxFiles": 200,
+  "codexTailImportMaxTailLines": 120,
+  "codexTailImportMaxTailBytes": 120000,
+  "codexTailImportTimeoutMs": 1500,
+  "codexTailImportCodexHome": null,
   "contractsModel": null,
   "contractsPerCycleLimit": 5,
   "decisionsPerCycleLimit": 10
@@ -648,6 +659,12 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
 | `bundleTokenBudget` | `1000` | Total token budget for the SessionStart reference bundle. Header + recovery line cost is subtracted first; the remainder is divided across task state, contracts, handoff, decisions, and fingerprints. Lower values drop later slots first; the recovery line and header are last to lose space. |
 | `taskStateEnabled` | `true` | Include the current-task-state slot at the front of the reference bundle. When task state is sparse, the bundle says so explicitly instead of pretending recall is complete. |
 | `taskStateTokenBudget` | `200` | Token budget for the task-state slot. This slot is packed before contracts, handoff, decisions, and fingerprints. |
+| `codexTailImportProjectRoots` | `[]` | Explicit project roots allowed to import latest local session tail task state. Empty means disabled. Use `lcc codex tail-import --enable` instead of editing this list by hand. |
+| `codexTailImportMaxFiles` | `200` | Maximum local session files to inspect while looking for the latest matching project session. |
+| `codexTailImportMaxTailLines` | `120` | Maximum JSONL lines read from the selected local session tail. |
+| `codexTailImportMaxTailBytes` | `120000` | Maximum bytes read from the selected local session tail. |
+| `codexTailImportTimeoutMs` | `1500` | Startup budget for project tail import before the hook falls back to the normal bundle path. |
+| `codexTailImportCodexHome` | `null` | Optional override for the local Codex home used by tests or nonstandard installs. `null` uses `~/.codex`. |
 | `contractsModel` | `null` | Model used by the dream cycle's Phase 1.5 contract extractor. When `null`, falls back to `dreamModel`. Set this to a smaller model if dream cycles are over budget on contracts/decisions extraction. |
 | `contractsPerCycleLimit` | `5` | Maximum new Pending contracts the dream cycle proposes per run. Hard cap to keep the TUI approval queue tractable; further candidates are deferred to the next cycle. |
 | `decisionsPerCycleLimit` | `10` | Maximum new decision-typed summaries the dream cycle records per run. Decisions ride in the SessionStart bundle's decisions slot once recorded. |
@@ -908,7 +925,7 @@ lossless-code currently supports **Claude Code** natively. The hook and plugin e
 |-------|-------------|-----|--------|-------|
 | **Claude Code** | 20+ lifecycle events | ✅ | ✅ Supported | Full plugin with hooks, MCP, skills |
 | **Copilot CLI** | Claude Code format | ✅ | 🟢 Next | Reads `hooks.json` natively; lowest adaptation effort |
-| **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟢 Start continuity | `SessionStart` bundle, doctor checks, MCP setup, and launcher fallback. Prompt capture and transcript import remain planned |
+| **Codex CLI** | SessionStart, Stop, UserPromptSubmit | ✅ | 🟢 Start continuity | `SessionStart` bundle, doctor checks, MCP setup, launcher fallback, and project opt-in latest-tail task state. Prompt capture and full transcript import remain planned |
 | **Gemini CLI** | BeforeTool, AfterTool, lifecycle | ✅ | 🟡 Planned | Different event names; needs thin adapter layer |
 | **OpenCode** | session.compacting + plugin hooks | ✅ | 🔵 Researching | Plugin architecture differs; compacting hook maps to PreCompact |
 

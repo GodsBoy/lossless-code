@@ -37,6 +37,7 @@ cp "$SCRIPT_DIR/scripts/lcc"                  "$LOSSLESS_HOME/scripts/"
 chmod +x "$LOSSLESS_HOME/scripts/lcc"
 cp "$SCRIPT_DIR/scripts/codex_support.py"     "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/codex_session_start.py" "$LOSSLESS_HOME/scripts/"
+cp "$SCRIPT_DIR/scripts/codex_tail_import.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_stop.py"          "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_session_start.py" "$LOSSLESS_HOME/scripts/"
 cp "$SCRIPT_DIR/scripts/hook_store_message.py" "$LOSSLESS_HOME/scripts/"
@@ -444,7 +445,7 @@ sys.path.insert(0, '$LOSSLESS_HOME/scripts')
 import db
 conn = db.get_db()
 tables = [r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()]
-expected = ['sessions', 'messages', 'summaries', 'summary_sources', 'messages_fts', 'summaries_fts', 'dream_log']
+expected = ['sessions', 'messages', 'summaries', 'summary_sources', 'messages_fts', 'summaries_fts', 'dream_log', 'imported_task_state']
 missing = [t for t in expected if t not in tables]
 if missing:
     print(f'  [FAIL] Missing tables: {missing}')

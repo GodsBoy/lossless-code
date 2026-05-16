@@ -40,6 +40,7 @@ class TestDatabase(unittest.TestCase):
         ]
         for expected in ["sessions", "messages", "summaries", "summary_sources"]:
             self.assertIn(expected, tables)
+        self.assertIn("imported_task_state", tables)
 
     def test_import_surface_matches_all(self):
         """Every name in db.__all__ must resolve on the package.
@@ -235,6 +236,85 @@ class TestDatabase(unittest.TestCase):
 
         session = db.get_session("handoff-session")
         self.assertEqual(session["handoff_text"], "Left off at implementing auth module")
+
+    def test_imported_task_state_roundtrip(self):
+        record_id = db.upsert_imported_task_state(
+            project_root="/tmp/project",
+            source_runtime="codex-cli",
+            source_session_id="codex-old",
+            source_timestamp=100,
+            source_pointer="codex-session:codex-old",
+            goal="Add parser",
+            last_step="Added tests",
+            next_step="Wire hook",
+            confidence="medium",
+            status="found",
+        )
+
+        row = db.get_latest_imported_task_state("/tmp/project", source_runtime="codex-cli")
+
+        self.assertGreater(record_id, 0)
+        self.assertEqual(row["source_session_id"], "codex-old")
+        self.assertEqual(row["goal"], "Add parser")
+        self.assertEqual(row["next_step"], "Wire hook")
+
+    def test_latest_imported_task_state_is_project_scoped(self):
+        db.upsert_imported_task_state(
+            project_root="/tmp/project-a",
+            source_runtime="codex-cli",
+            source_session_id="codex-a",
+            source_timestamp=300,
+            goal="Project A",
+        )
+        db.upsert_imported_task_state(
+            project_root="/tmp/project-b",
+            source_runtime="codex-cli",
+            source_session_id="codex-b",
+            source_timestamp=400,
+            goal="Project B",
+        )
+
+        row = db.get_latest_imported_task_state("/tmp/project-a", source_runtime="codex-cli")
+
+        self.assertEqual(row["source_session_id"], "codex-a")
+        self.assertEqual(row["goal"], "Project A")
+
+    def test_latest_imported_task_state_prefers_newer_source(self):
+        db.upsert_imported_task_state(
+            project_root="/tmp/project-newer",
+            source_runtime="codex-cli",
+            source_session_id="codex-old",
+            source_timestamp=100,
+            goal="Old",
+        )
+        db.upsert_imported_task_state(
+            project_root="/tmp/project-newer",
+            source_runtime="codex-cli",
+            source_session_id="codex-new",
+            source_timestamp=200,
+            goal="New",
+        )
+
+        row = db.get_latest_imported_task_state("/tmp/project-newer", source_runtime="codex-cli")
+
+        self.assertEqual(row["source_session_id"], "codex-new")
+        self.assertEqual(row["goal"], "New")
+
+    def test_imported_task_state_accepts_partial_fields(self):
+        db.upsert_imported_task_state(
+            project_root="/tmp/project-partial",
+            source_runtime="codex-cli",
+            source_session_id="codex-partial",
+            confidence="low",
+            status="partial",
+            warning="next step unavailable",
+        )
+
+        row = db.get_latest_imported_task_state("/tmp/project-partial", source_runtime="codex-cli")
+
+        self.assertEqual(row["status"], "partial")
+        self.assertEqual(row["warning"], "next step unavailable")
+        self.assertEqual(row["goal"], "")
 
     def test_get_messages_by_ids(self):
         db.ensure_session("byid-session", "/tmp")

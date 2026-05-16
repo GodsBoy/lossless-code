@@ -290,6 +290,7 @@ from .embeddings import (
     get_embedding_model_coverage,
     get_all_embeddings,
 )
+from .task_state import upsert_imported_task_state, get_latest_imported_task_state
 
 __all__ = [
     # Path constants and connection
@@ -367,4 +368,7 @@ __all__ = [
     "count_embeddings",
     "get_embedding_model_coverage",
     "get_all_embeddings",
+    # Imported task state
+    "upsert_imported_task_state",
+    "get_latest_imported_task_state",
 ]

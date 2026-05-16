@@ -34,6 +34,7 @@ class TestCodexSessionStart(unittest.TestCase):
 
     def setUp(self):
         conn = db.get_db()
+        conn.execute("DELETE FROM imported_task_state")
         conn.execute("DELETE FROM contracts")
         conn.execute("DELETE FROM summary_sources")
         conn.execute("DELETE FROM summaries")
@@ -91,6 +92,92 @@ class TestCodexSessionStart(unittest.TestCase):
         db.save_config(cfg)
         output = codex_session_start.build_hook_output(self._payload(), io.StringIO())
         self.assertIsNone(output)
+
+    def test_importer_not_called_without_project_opt_in(self):
+        original = codex_session_start.codex_tail_import.refresh_imported_task_state
+
+        def fail_if_called(**kwargs):
+            raise AssertionError("tail importer should not run without opt-in")
+
+        codex_session_start.codex_tail_import.refresh_imported_task_state = fail_if_called
+        try:
+            output = codex_session_start.build_hook_output(self._payload(), io.StringIO())
+        finally:
+            codex_session_start.codex_tail_import.refresh_imported_task_state = original
+
+        self.assertIsNotNone(output)
+
+    def test_project_opt_in_imports_before_bundle(self):
+        project = db.Path(TEST_DIR) / "hook-project"
+        project.mkdir(exist_ok=True)
+        codex_home = db.Path(TEST_DIR) / "codex-home"
+        session_path = codex_home / "sessions" / "2026" / "05" / "16" / "previous.jsonl"
+        session_path.parent.mkdir(parents=True)
+        records = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "previous-codex-session",
+                    "timestamp": 1700000000,
+                    "cwd": str(project),
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Task: continue hook importer"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Completed: parser done. Next: render bundle."}],
+                },
+            },
+        ]
+        session_path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+        cfg = db.load_config()
+        cfg, _ = codex_session_start.codex_tail_import.set_project_opt_in(cfg, project, True)
+        cfg["codexTailImportCodexHome"] = str(codex_home)
+        db.save_config(cfg)
+
+        output = codex_session_start.build_hook_output(
+            self._payload(cwd=str(project)),
+            io.StringIO(),
+        )
+
+        rendered = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Recalled local task state", rendered)
+        self.assertIn("continue hook importer", rendered)
+        self.assertIn("render bundle.", rendered)
+
+    def test_import_failure_warns_and_still_returns_context(self):
+        project = db.Path(TEST_DIR) / "hook-failure-project"
+        project.mkdir(exist_ok=True)
+        cfg = db.load_config()
+        cfg, _ = codex_session_start.codex_tail_import.set_project_opt_in(cfg, project, True)
+        db.save_config(cfg)
+        original = codex_session_start.codex_tail_import.refresh_imported_task_state
+
+        def fail_import(**kwargs):
+            raise RuntimeError("synthetic failure")
+
+        stderr = io.StringIO()
+        codex_session_start.codex_tail_import.refresh_imported_task_state = fail_import
+        try:
+            output = codex_session_start.build_hook_output(
+                self._payload(cwd=str(project)),
+                stderr,
+            )
+        finally:
+            codex_session_start.codex_tail_import.refresh_imported_task_state = original
+
+        self.assertIsNotNone(output)
+        self.assertIn("tail import failed", stderr.getvalue())
 
     def test_ignore_pattern_prevents_session_creation(self):
         cfg = db.load_config()

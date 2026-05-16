@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import db
+import codex_tail_import
 import inject_context
 
 
@@ -294,6 +295,21 @@ def collect_doctor_checks(
     except Exception:
         checks.append(Check("Vault", "fail", "could not open lossless-code vault"))
 
+    try:
+        tail_import = codex_tail_import.describe_project_import(
+            cwd=cwd_path,
+            codex_home=codex_home,
+        )
+        tail_status = tail_import.get("status")
+        if tail_status == "enabled":
+            checks.append(Check("Tail import", "ok", tail_import["detail"]))
+        elif tail_status == "warn":
+            checks.append(Check("Tail import", "warn", tail_import["detail"]))
+        else:
+            checks.append(Check("Tail import", "info", tail_import["detail"]))
+    except Exception:
+        checks.append(Check("Tail import", "warn", "could not inspect tail import status"))
+
     context = inject_context.build_context(working_dir=str(cwd_path), agent_source="codex-cli")
     if context:
         checks.append(Check("Bundle preview", "ok", f"{len(context)} characters"))
@@ -345,3 +361,18 @@ def print_hook_dry_run(scope: str, codex_home: str | Path | None = None, cwd: st
 
 def print_mcp_dry_run(codex_cmd: str = "codex") -> str:
     return _command_string(mcp_add_command(codex_cmd=codex_cmd))
+
+
+def set_tail_import_project(cwd: str | Path | None, enabled: bool) -> tuple[str, bool]:
+    cfg = db.load_config()
+    updated, project_root = codex_tail_import.set_project_opt_in(cfg, cwd, enabled)
+    db.save_config(updated)
+    return project_root, enabled
+
+
+def format_tail_import_status(
+    cwd: str | Path | None = None,
+    codex_home: str | Path | None = None,
+) -> str:
+    status = codex_tail_import.describe_project_import(cwd=cwd or os.getcwd(), codex_home=codex_home)
+    return f"{status['status']}: {status['detail']}"
