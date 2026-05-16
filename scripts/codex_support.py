@@ -100,22 +100,85 @@ def hook_config(
 def _merge_hook_config(existing: dict, desired: dict) -> dict:
     merged = dict(existing)
     hooks = dict(merged.get("hooks") or {})
-    session_start = list(hooks.get("SessionStart") or [])
+    session_start = hooks.get("SessionStart") or []
+    if not isinstance(session_start, list):
+        session_start = []
     filtered = []
     for group in session_start:
         handlers = group.get("hooks", []) if isinstance(group, dict) else []
-        commands = [
-            h.get("command", "")
-            for h in handlers
-            if isinstance(h, dict)
-        ]
-        if any("codex_session_start.py" in command for command in commands):
+        if not isinstance(handlers, list):
+            filtered.append(group)
             continue
-        filtered.append(group)
+        kept_handlers = [
+            h
+            for h in handlers
+            if not (isinstance(h, dict) and _is_codex_session_start_hook(h))
+        ]
+        if len(kept_handlers) == len(handlers):
+            filtered.append(group)
+            continue
+        if kept_handlers:
+            updated_group = dict(group)
+            updated_group["hooks"] = kept_handlers
+            filtered.append(updated_group)
     filtered.extend(desired["hooks"]["SessionStart"])
     hooks["SessionStart"] = filtered
     merged["hooks"] = hooks
     return merged
+
+
+def _is_codex_session_start_hook(handler: dict) -> bool:
+    return "codex_session_start.py" in str(handler.get("command", ""))
+
+
+def _config_has_codex_session_start(config: dict) -> bool:
+    hooks = config.get("hooks") if isinstance(config, dict) else {}
+    session_start = hooks.get("SessionStart", []) if isinstance(hooks, dict) else []
+    if not isinstance(session_start, list):
+        return False
+    for group in session_start:
+        if not isinstance(group, dict):
+            continue
+        handlers = group.get("hooks", [])
+        if not isinstance(handlers, list):
+            continue
+        if any(isinstance(h, dict) and _is_codex_session_start_hook(h) for h in handlers):
+            return True
+    return False
+
+
+def _read_hook_config(path: Path) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return config if isinstance(config, dict) else {}
+
+
+def _hook_registration_status(paths: list[Path]) -> Check:
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return Check("Hook config", "warn", "no user or project hooks.json found")
+
+    invalid: list[str] = []
+    registered: list[str] = []
+    for path in existing:
+        config = _read_hook_config(path)
+        if config is None:
+            invalid.append(str(path))
+            continue
+        if _config_has_codex_session_start(config):
+            registered.append(str(path))
+    if registered:
+        return Check("Hook config", "ok", "codex_session_start.py registered in " + ", ".join(registered))
+    if invalid:
+        return Check("Hook config", "warn", "invalid hooks.json: " + ", ".join(invalid))
+    return Check(
+        "Hook config",
+        "warn",
+        "codex_session_start.py not registered in " + ", ".join(str(path) for path in existing),
+    )
 
 
 def hook_config_path(scope: str, codex_home: str | Path | None = None, cwd: str | Path | None = None) -> Path:
@@ -165,6 +228,13 @@ def _run(args: list[str], timeout: int = 5) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
 
 
+def _safe_run(runner, args: list[str]) -> subprocess.CompletedProcess | None:
+    try:
+        return runner(args)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _feature_state(features_output: str, name: str) -> str:
     for line in features_output.splitlines():
         parts = line.split()
@@ -181,21 +251,22 @@ def collect_doctor_checks(
 ) -> list[Check]:
     cwd_path = Path(cwd or os.getcwd())
     checks: list[Check] = []
-    codex_path = shutil.which(codex_cmd) if os.path.basename(codex_cmd) == codex_cmd else codex_cmd
-    if not codex_path:
+    is_bare_command = os.path.basename(codex_cmd) == codex_cmd
+    codex_path = shutil.which(codex_cmd) if is_bare_command else codex_cmd
+    if not codex_path or (not is_bare_command and not Path(codex_path).exists()):
         checks.append(Check("Codex CLI", "fail", f"{codex_cmd} not found"))
         checks.append(Check("Launcher fallback", "fail", "Codex CLI is required to launch"))
         return checks
     checks.append(Check("Codex CLI", "ok", str(codex_path)))
 
-    version = runner([codex_cmd, "--version"])
-    if version.returncode == 0:
+    version = _safe_run(runner, [codex_cmd, "--version"])
+    if version and version.returncode == 0:
         checks.append(Check("Codex version", "ok", version.stdout.strip()))
     else:
         checks.append(Check("Codex version", "warn", "could not read version"))
 
-    features = runner([codex_cmd, "features", "list"])
-    if features.returncode == 0:
+    features = _safe_run(runner, [codex_cmd, "features", "list"])
+    if features and features.returncode == 0:
         hooks = _feature_state(features.stdout, "hooks")
         mcp = _feature_state(features.stdout, "mcp")
         plugin_hooks = _feature_state(features.stdout, "plugin_hooks")
@@ -205,21 +276,17 @@ def collect_doctor_checks(
     else:
         checks.append(Check("Feature list", "warn", "could not read feature flags"))
 
-    mcp_list = runner([codex_cmd, "mcp", "list"])
-    if mcp_list.returncode == 0 and SERVER_NAME in mcp_list.stdout:
+    mcp_list = _safe_run(runner, [codex_cmd, "mcp", "list"])
+    if mcp_list and mcp_list.returncode == 0 and SERVER_NAME in mcp_list.stdout:
         checks.append(Check("MCP registration", "ok", f"{SERVER_NAME} configured"))
-    elif mcp_list.returncode == 0:
+    elif mcp_list and mcp_list.returncode == 0:
         checks.append(Check("MCP registration", "warn", f"{SERVER_NAME} not configured"))
     else:
         checks.append(Check("MCP registration", "warn", "could not list MCP servers"))
 
     user_hooks = hook_config_path("user", codex_home=codex_home)
     project_hooks = hook_config_path("project", cwd=cwd_path)
-    present = [str(path) for path in (user_hooks, project_hooks) if path.exists()]
-    if present:
-        checks.append(Check("Hook config", "ok", ", ".join(present)))
-    else:
-        checks.append(Check("Hook config", "warn", "no user or project hooks.json found"))
+    checks.append(_hook_registration_status([user_hooks, project_hooks]))
 
     try:
         db.get_db()

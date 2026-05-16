@@ -239,6 +239,20 @@ def _contains_reserved_marker(text: str) -> bool:
     return any(marker in text for marker in _RESERVED_BUNDLE_MARKERS)
 
 
+def _safe_bundle_text(value: str, max_len: int, fallback: str = "") -> str:
+    raw = str(value or "")
+    if _contains_reserved_marker(raw):
+        return fallback
+    sanitized = _sanitize_for_context(raw, max_len=max_len)
+    if _contains_reserved_marker(sanitized):
+        return fallback
+    return sanitized or fallback
+
+
+def _mcp_args(args: dict) -> str:
+    return json.dumps(args)
+
+
 def _render_handoff_ref(session: dict) -> str:
     """Render a session's handoff as a one-line ref + Expand pointer.
 
@@ -251,13 +265,13 @@ def _render_handoff_ref(session: dict) -> str:
         return ""
     if _contains_reserved_marker(handoff):
         return ""
-    sid = session.get("session_id", "?")
+    sid = _safe_bundle_text(session.get("session_id") or "?", max_len=60, fallback="?")
     summary_line = _sanitize_for_context(handoff.split("\n", 1)[0], max_len=200)
     if not summary_line:
         return ""
     return (
         f"[lcc.handoff] {summary_line}. "
-        f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
+        f"Expand: call MCP tool 'lcc_handoff' with {_mcp_args({'session_id': sid})}"
     )
 
 
@@ -276,8 +290,8 @@ def _render_decision_ref(summary: dict) -> str:
     summary_line = _sanitize_for_context(body.split("\n", 1)[0], max_len=200)
     if not summary_line:
         return ""
-    sid = summary.get("id", "?")
-    session_id = summary.get("session_id") or "?"
+    sid = _safe_bundle_text(summary.get("id") or "?", max_len=60, fallback="?")
+    session_id = _safe_bundle_text(summary.get("session_id") or "?", max_len=20, fallback="?")
     created = summary.get("created_at")
     when = ""
     if created:
@@ -286,8 +300,8 @@ def _render_decision_ref(summary: dict) -> str:
     when_str = f" dated {when}" if when else ""
     return (
         f"[lcc.decision] {summary_line} (session "
-        f"{_sanitize_for_context(session_id, max_len=20)}{when_str}). "
-        f'Expand: call MCP tool \'lcc_expand\' with {{"summary_id": "{sid}"}}'
+        f"{session_id}{when_str}). "
+        f"Expand: call MCP tool 'lcc_expand' with {_mcp_args({'summary_id': sid})}"
     )
 
 
@@ -328,7 +342,7 @@ def _render_task_state_ref(item: dict) -> str:
         text = item.get("text") or ""
         if _contains_reserved_marker(text):
             return ""
-        sid = _sanitize_for_context(item.get("session_id") or "?", max_len=60)
+        sid = _safe_bundle_text(item.get("session_id") or "?", max_len=60, fallback="?")
         summary_line = _sanitize_for_context(text.split("\n", 1)[0], max_len=180)
         if not summary_line:
             return ""
@@ -337,11 +351,11 @@ def _render_task_state_ref(item: dict) -> str:
             f"[lcc.task] Last handoff: {summary_line}. "
             f"source=handoff session {sid}; freshness={freshness}; "
             "confidence=medium; status=partial. "
-            f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
+            f"Expand: call MCP tool 'lcc_handoff' with {_mcp_args({'session_id': sid})}"
         )
     if kind == "workspace":
-        working_dir = _sanitize_for_context(item.get("working_dir") or "", max_len=180)
-        branch = _sanitize_for_context(item.get("branch") or "", max_len=80)
+        working_dir = _safe_bundle_text(item.get("working_dir") or "", max_len=180)
+        branch = _safe_bundle_text(item.get("branch") or "", max_len=80)
         if not working_dir:
             return ""
         branch_text = f"; branch={branch}" if branch else ""
@@ -351,8 +365,16 @@ def _render_task_state_ref(item: dict) -> str:
             'Expand: call MCP tool \'lcc_sessions\' with {"limit": 5}'
         )
     if kind == "sparse":
-        agent_source = _sanitize_for_context(item.get("agent_source") or "unknown", max_len=40)
-        working_dir = _sanitize_for_context(item.get("working_dir") or "unknown", max_len=180)
+        agent_source = _safe_bundle_text(
+            item.get("agent_source") or "unknown",
+            max_len=40,
+            fallback="unknown",
+        )
+        working_dir = _safe_bundle_text(
+            item.get("working_dir") or "unknown",
+            max_len=180,
+            fallback="omitted",
+        )
         return (
             "[lcc.task] No reliable current task state found. "
             f"source={agent_source}; workspace={working_dir}; freshness=unknown; "

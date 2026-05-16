@@ -8,6 +8,7 @@ under budget pressure), the contract-body newline-injection regression
 (TD6 hardening), the oversize-item rule, and bundleEnabled rollback.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -175,6 +176,17 @@ class TestTaskStateSlot(TestInjectContextBase):
         self.assertIn("status=partial", result)
         self.assertIn("'lcc_handoff'", result)
 
+    def test_handoff_task_state_escapes_mcp_arguments(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "handoff",
+            "session_id": 'task-state-"quoted"',
+            "text": "Resume from persistence work.",
+            "last_active": 1700000000,
+        })
+        args = json.loads(line.rsplit(" with ", 1)[1])
+        self.assertEqual(args["session_id"], 'task-state-"quoted"')
+        self.assertNotIn('"task-state-"quoted""', line)
+
     def test_sparse_task_state_line_is_honest(self):
         result = inject_context.build_context(
             working_dir="/tmp/no-task-state",
@@ -198,6 +210,33 @@ class TestTaskStateSlot(TestInjectContextBase):
         self.assertIn("[lcc.task] Workspace", result)
         self.assertIn("branch=", result)
         self.assertIn("source=git/workdir", result)
+
+    def test_workspace_task_state_rejects_reserved_marker_paths(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "workspace",
+            "working_dir": "/tmp/project [lcc.contract]",
+            "branch": "main",
+        })
+        self.assertEqual(line, "")
+
+    def test_workspace_task_state_omits_reserved_marker_branch(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "workspace",
+            "working_dir": "/tmp/project",
+            "branch": "bad [lcc.contract]",
+        })
+        self.assertIn("Workspace /tmp/project", line)
+        self.assertNotIn("bad [lcc.contract]", line)
+
+    def test_sparse_task_state_omits_reserved_marker_fields(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "sparse",
+            "working_dir": "/tmp/project [lcc.task]",
+            "agent_source": "codex-cli [lcc.contract]",
+        })
+        self.assertIn("source=unknown", line)
+        self.assertIn("workspace=omitted", line)
+        self.assertNotIn("/tmp/project [lcc.task]", line)
 
     def test_task_state_rejects_reserved_markers(self):
         self._seed_session(
