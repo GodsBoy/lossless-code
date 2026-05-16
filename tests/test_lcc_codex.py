@@ -3,6 +3,7 @@
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -86,6 +87,49 @@ class TestCodexSupport(unittest.TestCase):
         self.assertIn('"SessionStart"', content)
         self.assertIn("codex_session_start.py", content)
 
+    def test_write_hook_config_preserves_unrelated_session_start_handlers(self):
+        root = Path(TEST_DIR) / "project-mixed-hooks"
+        root.mkdir()
+        hook_path = root / ".codex" / "hooks.json"
+        hook_path.parent.mkdir()
+        hook_path.write_text(json.dumps({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "startup",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python old/codex_session_start.py",
+                            },
+                            {
+                                "type": "command",
+                                "command": "echo keep-me",
+                            },
+                        ],
+                    }
+                ]
+            }
+        }), encoding="utf-8")
+
+        codex_support.write_hook_config(
+            "project",
+            cwd=root,
+            python_executable="python",
+            script_path="scripts/codex_session_start.py",
+        )
+
+        config = json.loads(hook_path.read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for group in config["hooks"]["SessionStart"]
+            for hook in group["hooks"]
+        ]
+        normalized = [command.replace("\\", "/") for command in commands]
+        self.assertIn("echo keep-me", normalized)
+        self.assertIn("python scripts/codex_session_start.py", normalized)
+        self.assertNotIn("python old/codex_session_start.py", normalized)
+
     def test_project_hook_path_uses_git_root(self):
         root = Path(TEST_DIR) / "project-root"
         nested = root / "nested"
@@ -158,6 +202,67 @@ class TestCodexSupport(unittest.TestCase):
         self.assertIn("[ok] Hooks feature: true", rendered)
         self.assertIn("[warn] MCP registration: lossless-code not configured", rendered)
         self.assertIn("[ok] Bundle preview", rendered)
+
+    def test_doctor_warns_when_hooks_file_lacks_codex_registration(self):
+        root = Path(TEST_DIR) / "project-unrelated-hook"
+        hook_path = root / ".codex" / "hooks.json"
+        hook_path.parent.mkdir(parents=True)
+        hook_path.write_text(
+            '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo stop"}]}]}}',
+            encoding="utf-8",
+        )
+
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=sys.executable,
+            codex_home=Path(TEST_DIR) / "empty-codex-home",
+            cwd=root,
+            runner=lambda args, timeout=5: Proc(""),
+        )
+
+        rendered = codex_support.format_checks(checks)
+        self.assertIn("[warn] Hook config: codex_session_start.py not registered", rendered)
+
+    def test_doctor_reports_registered_codex_hook(self):
+        root = Path(TEST_DIR) / "project-registered-hook"
+        codex_support.write_hook_config(
+            "project",
+            cwd=root,
+            python_executable="python",
+            script_path="scripts/codex_session_start.py",
+        )
+
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=sys.executable,
+            codex_home=Path(TEST_DIR) / "empty-codex-home-2",
+            cwd=root,
+            runner=lambda args, timeout=5: Proc(""),
+        )
+
+        rendered = codex_support.format_checks(checks)
+        self.assertIn("[ok] Hook config: codex_session_start.py registered", rendered)
+
+    def test_doctor_handles_invalid_absolute_codex_path(self):
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=str(Path(TEST_DIR) / "missing-codex.exe"),
+        )
+        rendered = codex_support.format_checks(checks)
+        self.assertIn("[fail] Codex CLI", rendered)
+
+    def test_doctor_handles_runner_errors(self):
+        def runner(args, timeout=5):
+            raise subprocess.TimeoutExpired(args, timeout)
+
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=sys.executable,
+            codex_home=Path(TEST_DIR) / "empty-codex-home-3",
+            cwd=Path(TEST_DIR),
+            runner=runner,
+        )
+
+        rendered = codex_support.format_checks(checks)
+        self.assertIn("[warn] Codex version: could not read version", rendered)
+        self.assertIn("[warn] Feature list: could not read feature flags", rendered)
+        self.assertIn("[warn] MCP registration: could not list MCP servers", rendered)
 
     def test_doctor_handles_missing_codex(self):
         checks = codex_support.collect_doctor_checks(codex_cmd="codex-definitely-missing")
