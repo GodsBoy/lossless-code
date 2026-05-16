@@ -19,6 +19,89 @@ lossless-code is a Python CLI + MCP server for DAG-based AI session memory in Cl
 
 External landscape: Mem0/Letta/Zep/OpenAI Memory all discard raw messages. Letta's own LoCoMo benchmark showed plain filesystem grep+vector beat Mem0's graph 74% vs 68.5% — caution against over-investing in DAG complexity. MINJA memory poisoning (>95% success, NeurIPS 2025) and GDPR Art 17/20 are active risks against append-only memory.
 
+## Codex Extension, 2026-05-16
+
+The same "just remembers" problem now applies to Codex. The repo already tracks Codex CLI as planned in README compatibility notes: MCP recall works today, but automatic capture needs Codex hook adaptation. Local Codex CLI inspection on this machine showed `codex-cli 0.130.0-alpha.5`; `hooks` is stable, `plugins` and `mcp` are stable, while `plugin_hooks` remains under development and disabled. That makes the right opening move MCP-first plus user-level hooks, not a plugin-native hook dependency.
+
+Current OpenAI docs also sharpen the context-window framing. [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest), described as optimized for Codex CLI, lists a 200,000 context window and 100,000 max output tokens. Newer Codex API model pages such as [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex) list a 400,000 context window and 128,000 max output tokens. The product point is not "Codex has no context"; it is that even 200k to 400k tokens remains finite, expensive to refill, and lossy when work spans many sessions, repos, branches, terminals, and app connectors.
+
+**Codex-specific win condition:** make Codex feel continuous across local threads, app sessions, CLI sessions, goals, compactions, and agent handoffs, with recall that is inspectable and pull-on-demand instead of stuffing the whole past into every turn.
+
+### Codex Idea A. Codex MCP-first recall pack
+**Description:** Ship a Codex-ready MCP registration path before waiting on plugin hooks. The first Codex support slice should make `lcc_grep`, `lcc_expand`, `lcc_context`, `lcc_sessions`, `lcc_handoff`, `lcc_status`, and `lcc_contracts` available through `codex mcp add`, with a `lcc codex doctor` check that verifies the MCP server is registered and can read the same vault.
+**Warrant:** `direct:` README already says MCP works everywhere today and Codex CLI is planned. `direct:` local `codex mcp list` returned no configured MCP servers, so there is immediate setup friction. `external:` [OpenAI Codex use cases](https://developers.openai.com/codex/use-cases/) explicitly include "Create a CLI Codex can use" and "Understand large codebases," which fit an MCP-first recall surface.
+**Rationale:** This creates value even if automatic capture is not ready. A Codex user can ask for prior context and fetch exact source history without any hook dependency. It also gives implementation a narrow, testable first PR.
+**Downsides:** Recall is manual until hooks land. Users may forget to call the MCP tools unless SessionStart or rules nudge them.
+**Confidence:** 90%
+**Complexity:** Low
+**Status:** New
+
+### Codex Idea B. Codex hook adapter with event parity map
+**Description:** Add a Codex hook adapter that maps Codex's stable hook surface to the existing capture scripts. Start with the events local Codex already exposes reliably, then map them to the closest current scripts: session start creates or resumes a session and emits the reference bundle, prompt submission stores user input and optional context hints, stop captures transcript or final assistant messages. Treat compaction hooks as opportunistic until Codex exposes an exact PreCompact and PostCompact equivalent.
+**Warrant:** `direct:` local `codex features list` shows `hooks` as stable, while `plugin_hooks` is under development. `direct:` existing hook scripts already separate session start, user prompt, stop, pre-compact, and post-compact behavior. `direct:` README currently lists Codex CLI as planned, with SessionStart, Stop, and UserPromptSubmit named.
+**Rationale:** This opens the "automatic capture" loop without forcing the Claude Code plugin model onto Codex prematurely. It also keeps the implementation honest: one adapter layer normalizes event payloads into existing Python script arguments.
+**Downsides:** Codex hook payload shapes may differ enough to require new parser tests. Without plugin hooks, installation may need user-level config edits first.
+**Confidence:** 80%
+**Complexity:** Medium
+**Status:** New
+
+### Codex Idea C. Context-window aware bundle budgets
+**Description:** Make `bundleTokenBudget` model-aware for Codex instead of a single 1000-token default. Detect or let users configure the active Codex model class, then choose a conservative bundle budget: tiny for `codex-mini-latest`, larger for GPT-5.x Codex models, and always bounded as a percentage of context. The bundle should report its own size and dropped sections so users can see what was omitted.
+**Warrant:** `external:` OpenAI docs list 200,000 context for `codex-mini-latest` and 400,000 for GPT-5.3-Codex. `direct:` README already has a fixed `bundleTokenBudget` default. `direct:` the previous provider-agnostic ideation already identified model-aware chunking as a needed direction.
+**Rationale:** Codex support should not assume "latest" means unlimited. A 200k context session can still be burned by long diffs, logs, screenshots, connector payloads, and tool outputs. Budgeting by model keeps Lossless-Code from becoming the thing that consumes the context it is supposed to protect.
+**Downsides:** Active-model detection may be incomplete in hooks. A static map needs maintenance as Codex models change.
+**Confidence:** 85%
+**Complexity:** Low-Medium
+**Status:** New
+
+### Codex Idea D. Goal and thread continuity bridge
+**Description:** Treat Codex goals, thread resumes, and forks as first-class session continuity events. Store goal objective, goal status, branch, cwd, active files, and last verification story as structured records. On SessionStart or `lcc_context`, surface "what goal is this thread pursuing, what changed, what remains" with drill-down links to prior sessions.
+**Warrant:** `direct:` local Codex config has goals enabled, and the [Codex use case page](https://developers.openai.com/codex/use-cases/) lists "Follow a goal" as a durable-workflow use case. `direct:` Lossless-Code already stores sessions, summaries, decisions, handoff state, and contracts.
+**Rationale:** Codex has a stronger long-running task shape than simple chat. Lossless-Code can be the continuity layer that explains why this branch exists, what was tried, and what the next safe step is after a resume or compaction.
+**Downsides:** Requires payload access to goal/thread metadata or a local side-channel. If Codex does not expose goal internals, the first version may need manual CLI annotations.
+**Confidence:** 75%
+**Complexity:** Medium
+**Status:** New
+
+### Codex Idea E. Codex transcript importer for immediate value
+**Description:** Build `lcc import-codex` to ingest existing Codex session logs from `~/.codex/sessions` and index them into the same vault. Preserve source path, thread id, cwd, model, and timestamp where available. This gives current Codex users retrospective recall before any hook work is finished.
+**Warrant:** `direct:` this machine has a populated `~/.codex/sessions` directory and a `session_index.jsonl`. `direct:` existing `hook_stop.py` already parses transcript-style records for Claude Code.
+**Rationale:** Importers are safer than hooks because they are offline and easy to test against fixtures. They also make the first demo stronger: install Lossless-Code, import your Codex past, ask what happened on a prior task.
+**Downsides:** Session file formats may change. Needs strict redaction and permissions because Codex logs can contain sensitive local work.
+**Confidence:** 80%
+**Complexity:** Medium
+**Status:** New
+
+### Codex Idea F. Codex skill and AGENTS.md bootstrap
+**Description:** Provide a Codex-specific skill plus AGENTS.md snippet that teaches the agent when to call `lcc_context`, `lcc_grep`, and `lcc_expand`, and when not to. Keep it instruction-light: "search before repeating investigation," "expand cited summaries before relying on them," and "do not inject huge memory dumps."
+**Warrant:** `direct:` Codex already loads AGENTS.md and skills in this environment. `direct:` Lossless-Code already has a `skills/lossless-code/SKILL.md` Claude-facing skill.
+**Rationale:** Until Codex can receive automatic plugin-hook context everywhere, the skill and AGENTS bootstrap are the cheapest way to change agent behavior. It also prevents the MCP-first version from feeling hidden.
+**Downsides:** Instruction-only behavior is weaker than hooks. Bad instructions can cause over-searching and token waste.
+**Confidence:** 80%
+**Complexity:** Low
+**Status:** New
+
+### Codex Idea G. Cross-agent vault with source namespacing
+**Description:** Add an explicit `agent_source` or `runtime` dimension to sessions and messages: `claude-code`, `codex-cli`, `codex-app`, `copilot-cli`, `opencode`, and so on. The same vault can hold multiple agent histories, but queries can filter by source or intentionally merge them.
+**Warrant:** `direct:` README compatibility table already looks beyond Claude Code. `direct:` current schema has sessions and working directories, but no durable source runtime field.
+**Rationale:** The long-term product should be "lossless context for coding agents," not a pile of per-agent forks. Namespacing prevents Codex and Claude histories from polluting each other while still allowing cross-agent recall when a project moves between tools.
+**Downsides:** Schema migration touches central tables. Every hook/importer must set the source correctly.
+**Confidence:** 85%
+**Complexity:** Medium
+**Status:** New
+
+## Codex Recommended Path
+
+Do not start by trying to fully port the Claude Code plugin. Start with a Codex support ladder:
+
+1. **MCP recall now:** document and implement a Codex MCP registration path plus `lcc codex doctor`.
+2. **Offline import next:** add `lcc import-codex` for existing `~/.codex/sessions` recall.
+3. **User-level hooks after that:** normalize Codex stable hook payloads into the existing Python capture scripts.
+4. **Model-aware bundles in parallel:** make bundle budgets aware of 200k and 400k Codex model contexts.
+5. **Plugin-native hooks later:** once `plugin_hooks` is stable, package automatic capture as a Codex plugin path.
+
+**Codex narrative:** "Codex has a large context window, but not a permanent one. Lossless-Code gives Codex durable, inspectable project memory that survives threads, goals, resumes, forks, and compaction without flooding every turn."
+
 ## Ranked Ideas
 
 ### 1. Compaction-aware context bundle: hijack PreCompact + PostCompact for lossless round-trips
