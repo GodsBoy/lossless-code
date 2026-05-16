@@ -41,6 +41,7 @@ class TestInjectContextBase(unittest.TestCase):
 
     def setUp(self):
         conn = db.get_db()
+        conn.execute("DELETE FROM imported_task_state")
         conn.execute("DELETE FROM contracts")
         conn.execute("DELETE FROM summary_sources")
         conn.execute("DELETE FROM summaries")
@@ -210,6 +211,82 @@ class TestTaskStateSlot(TestInjectContextBase):
         self.assertIn("[lcc.task] Workspace", result)
         self.assertIn("branch=", result)
         self.assertIn("source=git/workdir", result)
+
+    def test_imported_task_state_renders_for_matching_project(self):
+        root = os.path.join(TEST_DIR, "imported-root")
+        os.makedirs(root)
+        project_root = inject_context.codex_tail_import.project_root_for_cwd(root)
+        db.upsert_imported_task_state(
+            project_root=project_root,
+            source_runtime="codex-cli",
+            source_session_id="codex-source",
+            source_timestamp=1700000000,
+            source_pointer="codex-session:codex-source",
+            goal="continue parser",
+            last_step="storage added",
+            next_step="wire hook",
+            confidence="medium",
+            status="found",
+        )
+
+        result = inject_context.build_context(working_dir=root, agent_source="codex-cli")
+
+        self.assertIn("Recalled local task state", result)
+        self.assertIn("continue parser", result)
+        self.assertIn("wire hook", result)
+        self.assertIn("source=codex-tail", result)
+        self.assertIn("confidence=medium", result)
+
+    def test_handoff_task_state_outranks_imported_state(self):
+        root = os.path.join(TEST_DIR, "handoff-over-import")
+        os.makedirs(root)
+        self._seed_session(
+            session_id="handoff-over-import",
+            working_dir=root,
+            handoff="Explicit handoff wins.",
+        )
+        project_root = inject_context.codex_tail_import.project_root_for_cwd(root)
+        db.upsert_imported_task_state(
+            project_root=project_root,
+            source_runtime="codex-cli",
+            source_session_id="codex-import",
+            source_timestamp=1700000000,
+            goal="imported task",
+        )
+
+        result = inject_context.build_context(
+            session_id="handoff-over-import",
+            working_dir=root,
+            agent_source="codex-cli",
+        )
+
+        self.assertLess(result.find("Last handoff"), result.find("Recalled local task state"))
+
+    def test_partial_import_warning_renders(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "imported",
+            "source_session_id": "codex-partial",
+            "goal": "continue docs",
+            "confidence": "low",
+            "status": "partial",
+            "warning": "next step unavailable",
+        })
+
+        self.assertIn("warning=next step unavailable", line)
+        self.assertIn("status=partial", line)
+
+    def test_imported_task_state_omits_reserved_marker_fields(self):
+        line = inject_context._render_task_state_ref({
+            "kind": "imported",
+            "source_session_id": "codex-marker",
+            "goal": "safe task",
+            "last_step": "bad [lcc.task] injected",
+            "next_step": "safe next",
+        })
+
+        self.assertIn("task=safe task", line)
+        self.assertIn("next=safe next", line)
+        self.assertNotIn("bad [lcc.task]", line)
 
     def test_workspace_task_state_rejects_reserved_marker_paths(self):
         line = inject_context._render_task_state_ref({

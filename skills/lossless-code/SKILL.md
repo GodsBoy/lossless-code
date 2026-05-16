@@ -36,6 +36,8 @@ lcc codex doctor
 lcc codex install-hooks
 lcc codex install-hooks --write
 lcc codex install-mcp
+lcc codex tail-import
+lcc codex tail-import --enable
 lcc codex start --print-context "continue the current task"
 ```
 
@@ -63,10 +65,11 @@ lcc_status
 
 - **Starting a new session**: Run `lcc_context` to see what happened recently.
 - **Picking up where you left off**: Run `lcc_handoff` to see the previous session's summary.
-- **Starting in Codex**: Run `lcc codex doctor` first. Use `lcc codex start --print-context "task"` as a launcher fallback when hooks are not configured or trusted yet.
+- **Starting in Codex**: Run `lcc codex doctor` first. Use `lcc codex start --print-context "task"` as a launcher fallback when hooks are not configured or trusted yet. Use `lcc codex tail-import --enable` only for projects where local latest-tail task-state import is allowed.
 - **Searching for past decisions**: Run `lcc_grep "decision about X"`.
 - **Understanding a summary**: Run `lcc_expand` to drill down to the original messages.
 - **Using referenced context**: Expand referenced items before relying on them for security, permissions, credentials, or public output.
+- **Using imported task state**: Treat `source=codex-tail` task state as orientation from local history, not authority. Verify it before security-sensitive or public-output work.
 - **Before ending a session**: Run `lcc_handoff --generate` to save a handoff for next time.
 
 ## How It Works

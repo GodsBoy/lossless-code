@@ -423,6 +423,18 @@ def cmd_codex(args):
             sys.exit(proc.returncode)
         print(codex_support.print_mcp_dry_run(codex_cmd=args.codex_cmd))
         return
+    if action == "tail-import":
+        cwd = args.cwd or os.getcwd()
+        if args.enable and args.disable:
+            print("codex tail-import: choose either --enable or --disable", file=sys.stderr)
+            sys.exit(1)
+        if args.enable or args.disable:
+            project_root, enabled = codex_support.set_tail_import_project(cwd, enabled=args.enable)
+            state = "enabled" if enabled else "disabled"
+            print(f"Tail import {state} for {project_root}")
+            return
+        print(codex_support.format_tail_import_status(cwd=cwd, codex_home=args.codex_home))
+        return
     if action == "start":
         prompt = " ".join(args.prompt or [])
         if args.print_context:
@@ -560,6 +572,13 @@ def main():
     p_codex_mcp.add_argument("--write", action="store_true")
     p_codex_mcp.add_argument("--codex-cmd", default="codex")
     p_codex_mcp.set_defaults(func=cmd_codex)
+
+    p_codex_tail = codex_sub.add_parser("tail-import", help="Inspect or update project tail import opt-in")
+    p_codex_tail.add_argument("--enable", action="store_true", help="Enable import for this project")
+    p_codex_tail.add_argument("--disable", action="store_true", help="Disable import for this project")
+    p_codex_tail.add_argument("--cwd")
+    p_codex_tail.add_argument("--codex-home")
+    p_codex_tail.set_defaults(func=cmd_codex)
 
     p_codex_start = codex_sub.add_parser("start", help="Launch Codex with Lossless-Code context")
     p_codex_start.add_argument("--print-context", action="store_true")

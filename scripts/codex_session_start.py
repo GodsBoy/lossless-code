@@ -9,6 +9,7 @@ from typing import TextIO
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+import codex_tail_import
 import inject_context
 
 
@@ -79,6 +80,18 @@ def build_hook_output(payload: dict, stderr: TextIO = sys.stderr) -> dict | None
         stateless=stateless,
         agent_source=AGENT_SOURCE,
     )
+    if codex_tail_import.is_project_opted_in(working_dir, cfg):
+        try:
+            import_result = codex_tail_import.refresh_imported_task_state(
+                working_dir=working_dir,
+                current_session_id=session_id,
+                config=cfg,
+            )
+            warning = import_result.get("warning")
+            if import_result.get("status") == "partial" and warning:
+                _warn(stderr, f"tail import partial: {warning}")
+        except Exception:
+            _warn(stderr, "tail import failed")
     context = inject_context.build_context(
         session_id=session_id,
         working_dir=working_dir,

@@ -65,6 +65,26 @@ CREATE INDEX IF NOT EXISTS idx_messages_working_dir
     ON messages(working_dir, timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_working_dir
     ON sessions(working_dir, started_at);
+
+CREATE TABLE IF NOT EXISTS imported_task_state (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_root      TEXT NOT NULL,
+    source_runtime    TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    source_timestamp  INTEGER,
+    source_pointer    TEXT,
+    goal              TEXT,
+    last_step         TEXT,
+    next_step         TEXT,
+    blockers          TEXT,
+    confidence        TEXT NOT NULL DEFAULT 'low',
+    status            TEXT NOT NULL DEFAULT 'partial',
+    warning           TEXT,
+    imported_at       INTEGER NOT NULL,
+    UNIQUE(project_root, source_runtime, source_session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_imported_task_state_project
+    ON imported_task_state(project_root, source_runtime, source_timestamp, imported_at);
 """
 
 FTS_SQL = """\

@@ -45,6 +45,7 @@ class TestCodexSupport(unittest.TestCase):
     def setUp(self):
         conn = db.get_db()
         conn.execute("DELETE FROM contracts")
+        conn.execute("DELETE FROM imported_task_state")
         conn.execute("DELETE FROM summary_sources")
         conn.execute("DELETE FROM summaries")
         conn.execute("DELETE FROM messages")
@@ -169,6 +170,34 @@ class TestCodexSupport(unittest.TestCase):
         self.assertIn("Lossless-Code recalled context follows", proc.stdout)
         self.assertIn("[lcc.task]", proc.stdout)
 
+    def test_lcc_codex_tail_import_status_cli(self):
+        cli = Path(__file__).resolve().parent.parent / "scripts" / "lcc.py"
+        vault = Path(TEST_DIR) / "tail-cli-vault"
+        vault.mkdir()
+        project = Path(TEST_DIR) / "tail-cli-project"
+        project.mkdir()
+        env = os.environ.copy()
+        env["LOSSLESS_HOME"] = str(vault)
+        env["LOSSLESS_VAULT_DIR"] = str(vault)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(cli),
+                "codex",
+                "tail-import",
+                "--cwd",
+                str(project),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("disabled: disabled for current project", proc.stdout)
+
     def test_mcp_add_command_registers_lossless_code(self):
         command = codex_support.mcp_add_command(
             codex_cmd="codex",
@@ -201,7 +230,44 @@ class TestCodexSupport(unittest.TestCase):
         self.assertIn("[ok] Codex CLI", rendered)
         self.assertIn("[ok] Hooks feature: true", rendered)
         self.assertIn("[warn] MCP registration: lossless-code not configured", rendered)
+        self.assertIn("[info] Tail import: disabled for current project", rendered)
         self.assertIn("[ok] Bundle preview", rendered)
+
+    def test_tail_import_enable_disable_is_project_scoped(self):
+        project = Path(TEST_DIR) / "tail-project"
+        other = Path(TEST_DIR) / "tail-other"
+        project.mkdir()
+        other.mkdir()
+
+        enabled_root, enabled = codex_support.set_tail_import_project(project, True)
+        cfg = db.load_config()
+
+        self.assertTrue(enabled)
+        self.assertIn(enabled_root, cfg["codexTailImportProjectRoots"])
+        self.assertTrue(codex_support.codex_tail_import.is_project_opted_in(project, cfg))
+        self.assertFalse(codex_support.codex_tail_import.is_project_opted_in(other, cfg))
+
+        disabled_root, enabled = codex_support.set_tail_import_project(project, False)
+        cfg = db.load_config()
+
+        self.assertFalse(enabled)
+        self.assertEqual(disabled_root, enabled_root)
+        self.assertFalse(codex_support.codex_tail_import.is_project_opted_in(project, cfg))
+
+    def test_doctor_warns_when_enabled_tail_import_cannot_find_codex_home(self):
+        project = Path(TEST_DIR) / "tail-missing-home"
+        project.mkdir()
+        codex_support.set_tail_import_project(project, True)
+
+        checks = codex_support.collect_doctor_checks(
+            codex_cmd=sys.executable,
+            codex_home=Path(TEST_DIR) / "missing-codex-home",
+            cwd=project,
+            runner=lambda args, timeout=5: Proc(""),
+        )
+
+        rendered = codex_support.format_checks(checks)
+        self.assertIn("[warn] Tail import: enabled for current project", rendered)
 
     def test_doctor_warns_when_hooks_file_lacks_codex_registration(self):
         root = Path(TEST_DIR) / "project-unrelated-hook"
@@ -296,6 +362,15 @@ class TestCodexSupport(unittest.TestCase):
         content = install_sh.read_text(encoding="utf-8")
         self.assertIn("codex_support.py", content)
         self.assertIn("codex_session_start.py", content)
+        self.assertIn("codex_tail_import.py", content)
+
+    def test_readme_documents_tail_import_safety_model(self):
+        readme = Path(__file__).resolve().parent.parent / "README.md"
+        content = readme.read_text(encoding="utf-8")
+
+        self.assertIn("lcc codex tail-import --enable", content)
+        self.assertIn("does not store raw turns or full transcripts", content)
+        self.assertIn("codexTailImportProjectRoots", content)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@ DEFAULT_CONFIG = {
     "bundleTokenBudget": 1000,
     "taskStateEnabled": True,
     "taskStateTokenBudget": 200,
+    "codexTailImportProjectRoots": [],
+    "codexTailImportMaxFiles": 200,
+    "codexTailImportMaxTailLines": 120,
+    "codexTailImportMaxTailBytes": 120000,
+    "codexTailImportTimeoutMs": 1500,
+    "codexTailImportCodexHome": None,
     "contractsModel": None,  # Falls back to dreamModel then summaryModel
     "contractsPerCycleLimit": 10,
     "decisionsPerCycleLimit": 15,
