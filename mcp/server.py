@@ -34,6 +34,20 @@ import db
 import inject_context
 import summarise as summarise_mod
 
+
+def _active_session_id() -> str | None:
+    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID") or None
+
+
+def _format_timestamp(timestamp) -> str:
+    try:
+        value = float(timestamp)
+    except (TypeError, ValueError):
+        value = 0
+    if value > 10_000_000_000:
+        value = value / 1000
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
+
 # ---------------------------------------------------------------------------
 # Override vault path if env var is set
 # ---------------------------------------------------------------------------
@@ -283,7 +297,7 @@ def _do_grep(query: str, limit: int = 20) -> str:
     if msgs:
         parts.append(f"=== Messages ({len(msgs)} matches) ===\n")
         for m in msgs:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["timestamp"]))
+            ts = _format_timestamp(m["timestamp"])
             role = m["role"]
             content = m["content"]
             if len(content) > 200:
@@ -377,7 +391,7 @@ def _do_expand_span(span_id: str, full: bool = False) -> str:
     parts = [f"=== Span chain for message {msg_id} ({len(chain)} hops) ==="]
     running = len(parts[0])
     for span in chain:
-        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        ts = _format_timestamp(span["timestamp"])
         kind = span.get("span_kind") or "?"
         content = span["content"]
         if len(content) > 500 and not full:
@@ -417,7 +431,7 @@ def _do_expand(summary_id: str, full: bool = False) -> str:
         if src["source_type"] == "message":
             msgs = db.get_messages_by_ids([src["source_id"]])
             for m in msgs:
-                ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["timestamp"]))
+                ts = _format_timestamp(m["timestamp"])
                 content = m["content"]
                 if len(content) > 500 and not full:
                     content = content[:500] + "..."
@@ -435,7 +449,10 @@ def _do_expand(summary_id: str, full: bool = False) -> str:
 
 
 def _do_context() -> str:
-    context = inject_context.build_context()
+    context = inject_context.build_context(
+        session_id=_active_session_id(),
+        working_dir=os.getcwd(),
+    )
     return context if context else "No context available yet."
 
 

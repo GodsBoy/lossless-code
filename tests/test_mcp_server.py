@@ -2,15 +2,69 @@
 """Tests for lossless-code MCP server."""
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 # Point to test vault before any imports
 TEST_DIR = tempfile.mkdtemp(prefix="lossless_mcp_test_")
 os.environ["LOSSLESS_HOME"] = TEST_DIR
+
+
+def _install_mcp_test_stubs():
+    mcp_pkg = types.ModuleType("mcp")
+    server_mod = types.ModuleType("mcp.server")
+    stdio_mod = types.ModuleType("mcp.server.stdio")
+    types_mod = types.ModuleType("mcp.types")
+
+    class Server:
+        def __init__(self, name):
+            self.name = name
+
+        def list_tools(self):
+            return lambda fn: fn
+
+        def call_tool(self):
+            return lambda fn: fn
+
+        def create_initialization_options(self):
+            return {}
+
+        async def run(self, read, write, options):
+            return None
+
+    class Tool:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class TextContent:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    @contextlib.asynccontextmanager
+    async def stdio_server():
+        yield (None, None)
+
+    server_mod.Server = Server
+    stdio_mod.stdio_server = stdio_server
+    types_mod.Tool = Tool
+    types_mod.TextContent = TextContent
+    mcp_pkg.server = server_mod
+    mcp_pkg.types = types_mod
+    sys.modules["mcp"] = mcp_pkg
+    sys.modules["mcp.server"] = server_mod
+    sys.modules["mcp.server.stdio"] = stdio_mod
+    sys.modules["mcp.types"] = types_mod
+
+
+try:
+    from mcp.types import TextContent as _TextContentCheck  # noqa: F401
+except ImportError:
+    _install_mcp_test_stubs()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp"))
@@ -343,6 +397,20 @@ class TestMCPToolFunctions(unittest.TestCase):
         self.assertEqual(list(sig.parameters), [])
         result = _do_context()
         self.assertIsInstance(result, str)
+
+    def test_context_uses_current_session_and_working_dir(self):
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"CLAUDE_SESSION_ID": "mcp-session"}, clear=False), \
+             patch("server.os.getcwd", return_value="/tmp/mcp-cwd"), \
+             patch("server.inject_context.build_context", return_value="ctx") as build_context:
+            result = _do_context()
+
+        self.assertEqual(result, "ctx")
+        build_context.assert_called_once_with(
+            session_id="mcp-session",
+            working_dir="/tmp/mcp-cwd",
+        )
 
     # --- sessions ---
 

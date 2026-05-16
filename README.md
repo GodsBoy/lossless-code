@@ -236,7 +236,7 @@ After installation, every new Claude Code session auto-discovers 7 MCP tools:
 |------|-------------|
 | `lcc_grep` | Full-text search across messages and summaries |
 | `lcc_expand` | Expand a summary, file, or span chain back to source messages (v1.2: span_id mode for OTel-shaped span walks) |
-| `lcc_context` | Return the v1.2 SessionStart reference bundle (contracts + handoff + decisions + fingerprints) |
+| `lcc_context` | Return the v1.2 SessionStart reference bundle (task state + contracts + handoff + decisions + fingerprints) |
 | `lcc_sessions` | List sessions with metadata |
 | `lcc_handoff` | Generate session handoff documents |
 | `lcc_status` | Vault statistics (sessions, messages, DAG depth, DB size) plus v1.2 contract/decision counts and bundle state |
@@ -312,7 +312,7 @@ lcc_expand --file path/to/file.py          # list recent summaries that touched 
 
 ### `lcc_context`
 
-Print the v1.2 SessionStart reference bundle. The bundle starts with current task state when available, then contracts, handoff, decisions, and file fingerprints, with each line carrying its own Expand instruction. Takes no arguments; the bundle shape is the same content the start hooks inject.
+Print the v1.2 SessionStart reference bundle for the current working directory. The bundle starts with current task state when available, then contracts, handoff, decisions, and file fingerprints, with each line carrying its own Expand instruction. Takes no arguments; the bundle shape is the same content the start hooks inject.
 
 ```bash
 lcc_context
@@ -323,7 +323,7 @@ lcc_context
 Codex setup, diagnostics, and launcher helpers.
 
 ```bash
-lcc codex doctor                         # check Codex CLI, hooks, MCP, vault, and bundle preview
+lcc codex doctor                         # check Codex CLI, registered SessionStart hook, MCP, vault, and bundle preview
 lcc codex install-hooks                  # dry-run project hooks.json for SessionStart
 lcc codex install-hooks --write          # write project .codex/hooks.json
 lcc codex install-hooks --scope user     # dry-run ~/.codex/hooks.json
@@ -609,6 +609,8 @@ lcc status   # shows "Fingerprint: 342 tagged messages across 57 files (12 cache
   "dynamicChunkSize": { "enabled": true, "max": 50 },
   "bundleEnabled": true,
   "bundleTokenBudget": 1000,
+  "taskStateEnabled": true,
+  "taskStateTokenBudget": 200,
   "contractsModel": null,
   "contractsPerCycleLimit": 5,
   "decisionsPerCycleLimit": 10
