@@ -9,6 +9,7 @@ for the current session/query.
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -229,6 +230,7 @@ _RESERVED_BUNDLE_MARKERS = (
     "[lcc.contract]",
     "[lcc.handoff]",
     "[lcc.decision]",
+    "[lcc.task]",
     "[lcc.recovery]",
 )
 
@@ -289,6 +291,77 @@ def _render_decision_ref(summary: dict) -> str:
     )
 
 
+def _format_date(timestamp: int | None) -> str:
+    if not timestamp:
+        return "unknown"
+    from datetime import datetime
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+
+
+def _git_branch(working_dir: str) -> str:
+    """Best-effort current branch lookup for a real git working tree."""
+    if not working_dir or not os.path.exists(working_dir):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", working_dir, "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return _sanitize_for_context(proc.stdout.strip(), max_len=80)
+
+
+def _render_task_state_ref(item: dict) -> str:
+    """Render the current task-state slot.
+
+    This line is intentionally low-authority recall. It helps a fresh
+    session orient, but it never overrides current instructions.
+    """
+    kind = item.get("kind")
+    if kind == "handoff":
+        text = item.get("text") or ""
+        if _contains_reserved_marker(text):
+            return ""
+        sid = _sanitize_for_context(item.get("session_id") or "?", max_len=60)
+        summary_line = _sanitize_for_context(text.split("\n", 1)[0], max_len=180)
+        if not summary_line:
+            return ""
+        freshness = _format_date(item.get("last_active") or item.get("started_at"))
+        return (
+            f"[lcc.task] Last handoff: {summary_line}. "
+            f"source=handoff session {sid}; freshness={freshness}; "
+            "confidence=medium; status=partial. "
+            f'Expand: call MCP tool \'lcc_handoff\' with {{"session_id": "{sid}"}}'
+        )
+    if kind == "workspace":
+        working_dir = _sanitize_for_context(item.get("working_dir") or "", max_len=180)
+        branch = _sanitize_for_context(item.get("branch") or "", max_len=80)
+        if not working_dir:
+            return ""
+        branch_text = f"; branch={branch}" if branch else ""
+        return (
+            f"[lcc.task] Workspace {working_dir}{branch_text}; active step unknown. "
+            "source=git/workdir; freshness=live; confidence=low; status=partial. "
+            'Expand: call MCP tool \'lcc_sessions\' with {"limit": 5}'
+        )
+    if kind == "sparse":
+        agent_source = _sanitize_for_context(item.get("agent_source") or "unknown", max_len=40)
+        working_dir = _sanitize_for_context(item.get("working_dir") or "unknown", max_len=180)
+        return (
+            "[lcc.task] No reliable current task state found. "
+            f"source={agent_source}; workspace={working_dir}; freshness=unknown; "
+            "confidence=low; status=partial. "
+            'Expand: call MCP tool \'lcc_sessions\' with {"limit": 5}'
+        )
+    return ""
+
+
 def _pack_slot(items: list[dict], slot_budget: int, renderer) -> tuple[list[str], int]:
     """Greedy-pack rendered items into a single slot.
 
@@ -340,6 +413,41 @@ def _list_recent_decisions(working_dir: str, limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _list_current_task_state(
+    session_id: str | None,
+    working_dir: str,
+    agent_source: str = "claude-code",
+) -> list[dict]:
+    """Return bounded task-state candidates, strongest signal first."""
+    items: list[dict] = []
+    handoff_session = _get_handoff_session(session_id, working_dir)
+    if (
+        handoff_session
+        and not _contains_reserved_marker(handoff_session.get("handoff_text") or "")
+    ):
+        items.append({
+            "kind": "handoff",
+            "session_id": handoff_session.get("session_id"),
+            "text": handoff_session.get("handoff_text"),
+            "started_at": handoff_session.get("started_at"),
+            "last_active": handoff_session.get("last_active"),
+        })
+    branch = _git_branch(working_dir)
+    if working_dir and branch:
+        items.append({
+            "kind": "workspace",
+            "working_dir": working_dir,
+            "branch": branch,
+        })
+    if not items:
+        items.append({
+            "kind": "sparse",
+            "working_dir": working_dir,
+            "agent_source": agent_source,
+        })
+    return items
+
+
 def _list_active_file_fingerprints(working_dir: str, limit: int = 10) -> list[tuple[str, list[dict]]]:
     """Return (file_path, summaries) tuples for files with prior activity
     in the cwd. Each entry is rendered via format_file_fingerprint."""
@@ -386,6 +494,7 @@ def _pack_fingerprint_slot(
 def build_context(
     session_id: str = None,
     working_dir: str = "",
+    agent_source: str = "claude-code",
     config_override: dict = None,
 ) -> str:
     """Assemble the v1.2 reference bundle for SessionStart injection.
@@ -395,8 +504,9 @@ def build_context(
     full-text injection from v1.1 has been removed; set bundleEnabled=false
     in config to opt out of injection entirely (graceful degradation).
 
-    Slot order (TD8): header + recovery line first, then contracts,
-    handoff ref, decisions, file fingerprints. The recovery line and
+    Slot order (TD8 plus Codex task-state support): header + recovery
+    line first, then current task state, contracts, handoff ref,
+    decisions, file fingerprints. The recovery line and
     header are last to drop under R16 budget pressure; everything else
     drops oldest-first per the slot ladder.
     """
@@ -423,6 +533,17 @@ def build_context(
     # remaining budget runs out, later slots get less than their nominal
     # allocation (R16 drop order: contracts and recovery line are last
     # to lose space).
+    task_lines: list[str] = []
+    task_used = 0
+    if available > 0 and config.get("taskStateEnabled", True):
+        task_items = _list_current_task_state(session_id, working_dir, agent_source)
+        task_lines, task_used = _pack_slot(
+            task_items,
+            min(int(config.get("taskStateTokenBudget", 200)), available),
+            _render_task_state_ref,
+        )
+        available -= task_used
+
     contracts = _list_active_contracts(working_dir)
     contract_lines, contract_used = _pack_slot(
         contracts,
@@ -434,7 +555,7 @@ def build_context(
     handoff_lines: list[str] = []
     handoff_used = 0
     if available > 0:
-        handoff_session = _get_handoff_session(session_id)
+        handoff_session = _get_handoff_session(session_id, working_dir)
         if handoff_session:
             handoff_lines, handoff_used = _pack_slot(
                 [handoff_session],
@@ -466,6 +587,8 @@ def build_context(
     # line. Empty vault on first install: bundle still ships header +
     # recovery line so the agent learns the protocol.
     parts: list[str] = [_BUNDLE_HEADER, recovery_line]
+    if task_lines:
+        parts.append("\n".join(task_lines))
     if contract_lines:
         parts.append("\n".join(contract_lines))
     if handoff_lines:
@@ -477,7 +600,10 @@ def build_context(
     return "\n\n".join(parts)
 
 
-def _get_handoff_session(session_id: str | None) -> dict | None:
+def _get_handoff_session(
+    session_id: str | None,
+    working_dir: str = "",
+) -> dict | None:
     """Return the most recent session row with a handoff, optionally
     matching session_id when supplied. Used by the bundle's handoff slot.
     """
@@ -487,7 +613,10 @@ def _get_handoff_session(session_id: str | None) -> dict | None:
             return s
     sessions = db.list_sessions(limit=10)
     for s in sessions:
-        if s.get("handoff_text"):
+        if (
+            s.get("handoff_text")
+            and (not working_dir or s.get("working_dir") == working_dir)
+        ):
             return s
     return None
 
@@ -504,8 +633,6 @@ def main():
     context = build_context(
         session_id=args.session,
         working_dir=args.dir,
-        query=args.query,
-        limit=args.limit,
     )
 
     if args.json:

@@ -21,6 +21,7 @@ class TestDatabase(unittest.TestCase):
         """Initialise test database."""
         db._conn = None  # Reset connection
         db.LOSSLESS_HOME = db.Path(TEST_DIR)
+        db.VAULT_DIR = db.Path(TEST_DIR)
         db.VAULT_DB = db.LOSSLESS_HOME / "vault.db"
         db.CONFIG_PATH = db.LOSSLESS_HOME / "config.json"
         db.get_db()
@@ -68,6 +69,20 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(session["session_id"], "test-session-1")
         self.assertEqual(session["working_dir"], "/tmp/test")
 
+    def test_session_agent_source_defaults_to_claude_code(self):
+        db.ensure_session("agent-source-default", "/tmp/test")
+        session = db.get_session("agent-source-default")
+        self.assertEqual(session["agent_source"], "claude-code")
+
+    def test_session_agent_source_accepts_codex_cli(self):
+        db.ensure_session(
+            "agent-source-codex",
+            "/tmp/test",
+            agent_source="codex-cli",
+        )
+        session = db.get_session("agent-source-codex")
+        self.assertEqual(session["agent_source"], "codex-cli")
+
     def test_session_idempotent(self):
         db.ensure_session("test-session-2", "/tmp/a")
         db.ensure_session("test-session-2", "/tmp/a")
@@ -85,6 +100,21 @@ class TestDatabase(unittest.TestCase):
         )
         self.assertIsNotNone(msg_id)
         self.assertGreater(msg_id, 0)
+
+    def test_store_message_agent_source(self):
+        db.ensure_session("codex-msg-session", "/tmp", agent_source="codex-cli")
+        msg_id = db.store_message(
+            session_id="codex-msg-session",
+            role="user",
+            content="Hello from Codex",
+            working_dir="/tmp",
+            agent_source="codex-cli",
+        )
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT agent_source FROM messages WHERE id = ?", (msg_id,)
+        ).fetchone()
+        self.assertEqual(row["agent_source"], "codex-cli")
 
     def test_unsummarised_messages(self):
         db.ensure_session("unsum-session", "/tmp")
@@ -280,6 +310,17 @@ class TestDatabase(unittest.TestCase):
         for col in ("parent_message_id", "span_kind", "tool_call_id", "attributes"):
             self.assertIn(col, cols)
 
+    def test_agent_source_columns_exist(self):
+        conn = db.get_db()
+        session_cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        ]
+        message_cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()
+        ]
+        self.assertIn("agent_source", session_cols)
+        self.assertIn("agent_source", message_cols)
+
     def test_span_columns_nullable_for_pre_migration_rows(self):
         # store_message without span kwargs must succeed and leave columns NULL
         db.ensure_session("span-null-session", "/tmp")
@@ -314,6 +355,7 @@ class TestDatabase(unittest.TestCase):
         # Columns still present, no exception raised
         cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         self.assertIn("parent_message_id", cols)
+        self.assertIn("agent_source", cols)
 
     def test_store_message_with_span_fields(self):
         db.ensure_session("span-write", "/tmp")

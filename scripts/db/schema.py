@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at   INTEGER,
     last_active  INTEGER,
     handoff_text TEXT,
-    stateless    INTEGER NOT NULL DEFAULT 0
+    stateless    INTEGER NOT NULL DEFAULT 0,
+    agent_source TEXT DEFAULT 'claude-code'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS messages (
     working_dir TEXT,
     timestamp   INTEGER NOT NULL,
     summarised  INTEGER DEFAULT 0,
+    agent_source TEXT DEFAULT 'claude-code',
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
