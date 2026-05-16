@@ -26,6 +26,20 @@ import inject_context
 import summarise as summarise_mod
 
 
+def _active_session_id():
+    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID") or None
+
+
+def _format_timestamp(timestamp):
+    try:
+        value = float(timestamp)
+    except (TypeError, ValueError):
+        value = 0
+    if value > 10_000_000_000:
+        value = value / 1000
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
+
+
 def cmd_grep(args):
     """Full-text search across messages and summaries (hybrid when embedding active)."""
     cfg = db.load_config()
@@ -43,7 +57,7 @@ def cmd_grep(args):
     if msgs:
         print(f"=== Messages ({len(msgs)} matches{mode_tag}) ===\n")
         for m in msgs:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["timestamp"]))
+            ts = _format_timestamp(m["timestamp"])
             role = m["role"]
             content = m["content"]
             if len(content) > 200:
@@ -107,7 +121,7 @@ def cmd_expand(args):
         if src["source_type"] == "message":
             msgs = db.get_messages_by_ids([src["source_id"]])
             for m in msgs:
-                ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["timestamp"]))
+                ts = _format_timestamp(m["timestamp"])
                 content = m["content"]
                 if len(content) > 500 and not args.full:
                     content = content[:500] + "..."
@@ -138,7 +152,7 @@ def cmd_expand_span(args):
         return
     print(f"=== Span chain for message {msg_id} ({len(chain)} hops) ===")
     for span in chain:
-        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(span["timestamp"]))
+        ts = _format_timestamp(span["timestamp"])
         kind = span.get("span_kind") or "?"
         content = span["content"]
         if len(content) > 500 and not args.full:
@@ -148,7 +162,10 @@ def cmd_expand_span(args):
 
 def cmd_context(args):
     """Print the v1.2 reference bundle that SessionStart would inject."""
-    context = inject_context.build_context()
+    context = inject_context.build_context(
+        session_id=_active_session_id(),
+        working_dir=os.getcwd(),
+    )
     if context:
         print(context)
     else:

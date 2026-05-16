@@ -237,6 +237,25 @@ class TestLccExpandCliParity(unittest.TestCase):
             sys.argv = old_argv
         self.assertEqual(captured.get("span_id"), "42")
 
+    def test_context_uses_current_session_and_working_dir(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import lcc as _lcc
+
+        buf = io.StringIO()
+        with patch.dict(os.environ, {"CLAUDE_SESSION_ID": "cli-session"}, clear=False), \
+             patch("lcc.os.getcwd", return_value="/tmp/cli-cwd"), \
+             patch("lcc.inject_context.build_context", return_value="ctx") as build_context, \
+             contextlib.redirect_stdout(buf):
+            _lcc.cmd_context(type("NS", (), {})())
+
+        self.assertEqual(buf.getvalue().strip(), "ctx")
+        build_context.assert_called_once_with(
+            session_id="cli-session",
+            working_dir="/tmp/cli-cwd",
+        )
+
     def test_cli_walks_real_chain(self):
         """End-to-end: seed messages, walk the chain via cmd_expand_span."""
         import io
